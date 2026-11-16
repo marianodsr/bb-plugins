@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+
+# Snapshots of other people's plugins, kept locally for reference only
+upstream/
+
+# Local-only: screenshots show the author's own bb workspace
+docs/screenshots/
+
+# Coordination briefs for the agent threads that built this
+docs/briefs/
+
+.claude/
+
+# Stray screenshot from a driver script
+kit/scripts/probe.png

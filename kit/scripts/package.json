@@ -1,0 +1,9 @@
+{
+  "name": "bb-kit-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Dev tools for the shared kit: sync into plugins, screenshots. Not shipped in any plugin.",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

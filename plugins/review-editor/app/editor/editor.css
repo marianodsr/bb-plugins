@@ -1,0 +1,342 @@
+/* Review Editor's CodeMirror chrome. Plain CSS (bundled as is, no Tailwind),
+   host variables only, everything scoped under .rv-editor. Syntax colours
+   come from bb's code theme in theme.ts. */
+
+.rv-editor {
+  --rv-suggestion: var(--color-sky-500, oklch(68% 0.15 237));
+  --rv-issue: var(--attention);
+  --rv-blocker: var(--destructive);
+  --rv-note: var(--muted-foreground);
+  --rv-line: 1.6;
+}
+
+/* The editor grows with its content; the page's scroll container scrolls
+   code and margin rail together. Long lines scroll sideways inside it. */
+.rv-editor .cm-editor {
+  height: auto;
+  font-size: var(--text-sm, 13px);
+}
+.rv-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.rv-editor .cm-scroller {
+  overflow-x: auto;
+  overflow-y: visible;
+  font-family: var(--font-mono);
+  line-height: var(--rv-line);
+}
+.rv-editor .cm-content {
+  padding: 8px 0 48px;
+}
+.rv-editor .cm-gutters {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--background);
+  font-variant-numeric: tabular-nums;
+}
+.rv-editor .cm-lineNumbers .cm-gutterElement {
+  padding: 0 8px 0 12px;
+  color: var(--subtle-foreground);
+}
+.rv-editor .cm-activeLineGutter {
+  background: transparent;
+}
+/* The cursor line only shows while you are typing in the editor. */
+.rv-editor .cm-editor:not(.cm-focused) .cm-activeLine {
+  background: transparent;
+}
+.rv-editor .cm-activeLineGutter.cm-gutterElement {
+  color: var(--foreground);
+}
+
+/* Change bars: a 3 px bar per changed line against HEAD; removed lines get a
+   wedge on the line where they used to be. */
+.rv-editor .rv-change-gutter {
+  width: 7px;
+}
+.rv-editor .rv-change-gutter .cm-gutterElement {
+  position: relative;
+  cursor: pointer;
+}
+.rv-editor .rv-bar {
+  position: absolute;
+  inset: 0 2px 0 1px;
+  border-radius: 1.5px;
+  transition: transform var(--kit-dur-press, 120ms) ease-out;
+}
+.rv-editor .rv-change-gutter .cm-gutterElement:hover .rv-bar {
+  transform: scaleX(1.6);
+}
+.rv-editor .rv-bar-added {
+  background: var(--diff-added);
+}
+.rv-editor .rv-bar-modified {
+  background: var(--attention);
+}
+.rv-editor .rv-bar-removed {
+  inset: -3px 0 auto 1px;
+  height: 6px;
+  background: transparent;
+  border-left: 5px solid var(--diff-removed);
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+}
+
+/* The old lines, opened in place from a bar. */
+.rv-editor .rv-peek {
+  margin: 2px 0 4px;
+  border-block: 1px solid color-mix(in oklab, var(--diff-removed) 30%, transparent);
+  background: color-mix(in oklab, var(--diff-removed) 8%, transparent);
+  font-family: var(--font-sans);
+  animation: rv-enter var(--kit-dur-enter, 200ms) var(--kit-ease-enter, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.rv-editor .rv-peek-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 2px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.rv-editor .rv-peek-head > span {
+  flex: 1;
+}
+.rv-editor .rv-peek-action {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--foreground);
+  transition: background var(--kit-dur-press, 120ms) ease-out;
+}
+.rv-editor .rv-peek-action:hover {
+  background: var(--state-hover);
+}
+.rv-editor .rv-peek-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.rv-editor .rv-peek-body {
+  margin: 0;
+  padding: 2px 12px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 13px);
+  line-height: var(--rv-line);
+  white-space: pre;
+  overflow-x: auto;
+  color: color-mix(in oklab, var(--foreground) 80%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--diff-removed) 45%, transparent);
+}
+
+/* Commented lines: a quiet tint, stronger for the active comment. */
+.rv-editor .rv-commented {
+  --rv-sev: var(--rv-note);
+  background: color-mix(in oklab, var(--rv-sev) 7%, transparent);
+}
+.rv-editor .rv-commented-active {
+  background: color-mix(in oklab, var(--rv-sev) 15%, transparent);
+}
+.rv-editor .rv-sev-suggestion { --rv-sev: var(--rv-suggestion); }
+.rv-editor .rv-sev-issue { --rv-sev: var(--rv-issue); }
+.rv-editor .rv-sev-blocker { --rv-sev: var(--rv-blocker); }
+.rv-editor .rv-sev-note { --rv-sev: var(--rv-note); }
+
+/* The comment gutter: one marker on the first line of each range. */
+.rv-editor .rv-comment-gutter {
+  width: 18px;
+}
+.rv-editor .rv-comment-marker {
+  --rv-sev: var(--rv-note);
+  /* A small speech bubble: rounded on three corners, a tail at bottom left. */
+  display: grid;
+  place-items: center;
+  min-width: 13px;
+  height: 11px;
+  margin: calc((1em * var(--rv-line) - 11px) / 2) auto 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px 4px 4px 1px;
+  background: color-mix(in oklab, var(--rv-sev) 55%, transparent);
+  color: var(--background);
+  font: 700 8px/1 var(--font-sans);
+  cursor: pointer;
+  transition: transform var(--kit-dur-press, 120ms) ease-out, background var(--kit-dur-press, 120ms) ease-out;
+}
+.rv-editor .rv-comment-marker:hover,
+.rv-editor .rv-comment-marker-active {
+  background: var(--rv-sev);
+  transform: scale(1.12);
+}
+.rv-editor .rv-comment-marker:active {
+  transform: scale(0.92);
+}
+.rv-editor .rv-comment-marker:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.rv-editor .rv-fold {
+  display: inline-block;
+  width: 10px;
+  color: var(--subtle-foreground);
+  opacity: 0;
+  transition: opacity var(--kit-dur-press, 120ms) ease-out;
+}
+.rv-editor .cm-gutters:hover .rv-fold,
+.rv-editor .rv-fold-closed {
+  opacity: 1;
+}
+.rv-editor .rv-fold-open::before { content: "\2304"; }
+.rv-editor .rv-fold-closed::before { content: "\203A"; }
+
+/* Folded notes stay in the visible width while long code lines scroll
+   sideways; the page sets the two variables from its measurements. */
+.rv-editor .rv-inline-slot {
+  position: sticky;
+  left: var(--rv-gutter-width, 64px);
+  box-sizing: border-box;
+  width: calc(var(--rv-view-width, 100%) - var(--rv-gutter-width, 64px));
+  max-width: 720px;
+  padding: 4px 12px 8px 0;
+  font-family: var(--font-sans);
+  line-height: normal;
+  white-space: normal;
+}
+
+/* Search and go-to-line panels, in bb's control language. */
+.rv-editor .cm-panels {
+  background: var(--background);
+  color: var(--foreground);
+  border-color: var(--border);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.rv-editor .cm-panels.cm-panels-top {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+}
+.rv-editor .cm-panel.cm-search,
+.rv-editor .cm-panel.cm-gotoLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 36px 6px 12px;
+}
+.rv-editor .cm-panel input[type="text"],
+.rv-editor .cm-panel .cm-textfield {
+  height: 26px;
+  min-width: 160px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+.rv-editor .cm-panel input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+.rv-editor .cm-panel .cm-button {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  background-image: none;
+  color: var(--foreground);
+  font: inherit;
+}
+.rv-editor .cm-panel .cm-button:hover {
+  background: var(--state-hover);
+}
+.rv-editor .cm-panel label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-foreground);
+}
+.rv-editor .cm-panel button[name="close"] {
+  top: 8px;
+  right: 10px;
+  color: var(--muted-foreground);
+  font-size: 16px;
+}
+.rv-editor .cm-searchMatch {
+  background: color-mix(in oklab, var(--attention) 30%, transparent);
+  outline: none;
+}
+.rv-editor .cm-searchMatch-selected {
+  background: color-mix(in oklab, var(--attention) 60%, transparent);
+}
+.rv-editor .cm-selectionMatch {
+  background: color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+
+/* Diff (unified): deleted chunks shown above their replacement. */
+/* Lines carry a light wash; only the changed words inside a modified line
+   get a stronger one, so syntax colour stays readable. */
+.rv-editor .cm-changedLine,
+.rv-editor .cm-insertedLine {
+  background: color-mix(in oklab, var(--diff-added) 9%, transparent) !important;
+}
+.rv-editor .cm-changedText,
+.rv-editor ins.cm-insertedLine {
+  background: color-mix(in oklab, var(--diff-added) 16%, transparent) !important;
+  border-bottom: 0;
+  text-decoration: none;
+}
+.rv-editor .cm-deletedChunk,
+.rv-editor .cm-deletedLine {
+  background: color-mix(in oklab, var(--diff-removed) 9%, transparent) !important;
+}
+.rv-editor .cm-deletedChunk del,
+.rv-editor .cm-deletedText {
+  background: color-mix(in oklab, var(--diff-removed) 16%, transparent) !important;
+  text-decoration: none;
+}
+.rv-editor .cm-changeGutter {
+  width: 3px;
+  padding: 0;
+  margin-right: 4px;
+}
+.rv-editor .cm-changedLineGutter {
+  background: var(--diff-added) !important;
+}
+.rv-editor .cm-deletedLineGutter {
+  background: var(--diff-removed) !important;
+}
+.rv-editor .cm-collapsedLines {
+  padding: 4px 12px;
+  background: color-mix(in oklab, var(--foreground) 4%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+.rv-editor .cm-mergeView .cm-mergeViewEditors {
+  align-items: flex-start;
+}
+.rv-editor .cm-merge-a .cm-changedLine,
+.rv-editor .cm-merge-a .cm-deletedChunk {
+  background: color-mix(in oklab, var(--diff-removed) 9%, transparent) !important;
+}
+.rv-editor .cm-merge-a .cm-changedText {
+  background: color-mix(in oklab, var(--diff-removed) 16%, transparent) !important;
+}
+.rv-editor .cm-merge-a .cm-changedLineGutter {
+  background: var(--diff-removed) !important;
+}
+
+@keyframes rv-enter {
+  from { opacity: 0; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv-editor .rv-peek { animation-duration: 120ms; animation-name: rv-fade; }
+  .rv-editor .rv-bar, .rv-editor .rv-comment-marker { transition: none; }
+}
+@keyframes rv-fade {
+  from { opacity: 0; }
+}
