@@ -368,6 +368,11 @@ export class HelixService {
     return (await this.deps.host.call("ghosttyConfig", {}, { hostId: target, timeoutMs: 10_000 })) as GhosttyConfig;
   }
 
+  async perfMode(hostId: string, instanceId: string, mode: "normal" | "quiet" | "off"): Promise<boolean> {
+    const result = (await this.deps.host.call("perfMode", { instanceId, mode }, { hostId, timeoutMs: 10_000 })) as { found: boolean };
+    return result.found;
+  }
+
   async fontSetting(): Promise<string> {
     return (await this.deps.settings()).fontFamily.trim();
   }

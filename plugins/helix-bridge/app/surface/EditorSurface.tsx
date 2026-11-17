@@ -138,6 +138,8 @@ function Session({
     let disposed = false;
     let renderer: TerminalRenderer | null = null;
     const meter = config.hud ? new HudMeter() : null;
+    // With the HUD on, drivers can read and reset the raw samples.
+    if (meter) (window as unknown as { __helixHud?: HudMeter }).__helixHud = meter;
     const tail = new OutputTail();
     const owns = () => activeRef.current && element.contains(document.activeElement);
     const stream = new TerminalStream(terminalId, {

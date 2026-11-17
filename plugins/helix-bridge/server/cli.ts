@@ -271,6 +271,21 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
             });
           },
         }),
+        "perf-mode": cliCommand({
+          summary: "Diagnostics for one Helix: normal, quiet (its events reach the host but nothing goes on to bb) or off (no event subscriptions); for latency A/B runs",
+          positionals: [{ name: "mode", description: "normal | quiet | off", required: true }],
+          options: { instance: { ...instanceOption, description: "Helix instance (required): its key (host:pid), id or pid" } },
+          async run({ positionals, options }) {
+            return guard(async () => {
+              const mode = positionals.mode;
+              if (mode !== "normal" && mode !== "quiet" && mode !== "off") fail(`unknown mode "${mode}"`, "invalid_mode", "One of: normal, quiet, off");
+              if (!options.instance) fail("pass --instance", "instance_required", "perf-mode never picks an instance for you");
+              const instance = await target(options.instance, undefined);
+              const found = await service.perfMode(instance.hostId, instance.summary.id, mode);
+              return { exitCode: found ? 0 : 1, stdout: found ? `${instance.key}: ${mode}` : `${instance.key} is not connected` };
+            });
+          },
+        }),
         doctor: cliCommand({
           summary: "What is missing on this machine and how to fix it: the hxb binary, protocol, bridge directory, gopls, goimports, the editor font",
           options: { machine: { type: "string", description: "Machine (host) id to check; default this bb's own machine", aliases: ["host"] } },

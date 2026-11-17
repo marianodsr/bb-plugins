@@ -71,7 +71,15 @@ interface Instance {
   retryTimer: ReturnType<typeof setTimeout> | null;
   attempts: number;
   removed: boolean;
+  perf: PerfMode;
 }
+
+/**
+ * Diagnostics for latency A/B runs, per instance: `normal`; `quiet` (its
+ * events are folded but cause no signal, so no server or UI update); `off`
+ * (unsubscribed from every event, so Helix does no event work for us).
+ */
+export type PerfMode = "normal" | "quiet" | "off";
 
 export class InstanceManager {
   readonly bridgeDir: string;
@@ -158,6 +166,7 @@ export class InstanceManager {
       diagTimer: null,
       retryTimer: null,
       attempts: 0,
+      perf: "normal",
       removed: false,
     };
     this.instances.set(id, instance);
@@ -237,7 +246,7 @@ export class InstanceManager {
         this.changed();
         return;
       }
-      await connection.request("events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
+      if (instance.perf !== "off") await connection.request("events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
       instance.attempts = 0;
       instance.summary.status = "connected";
       instance.summary.error = null;
@@ -414,6 +423,7 @@ export class InstanceManager {
       default:
         return;
     }
+    if (instance.perf === "quiet") return;
     this.changed();
   }
 
@@ -472,6 +482,20 @@ export class InstanceManager {
     this.syncSendCounts();
     this.changed();
     return this.sends.length;
+  }
+
+  /** Returns false when no such instance is connected here. */
+  async setPerfMode(instanceId: string, mode: PerfMode): Promise<boolean> {
+    const instance = this.instances.get(instanceId);
+    const connection = instance?.connection;
+    if (!instance || !connection?.connected) return false;
+    const was = instance.perf;
+    instance.perf = mode;
+    if ((was === "off") !== (mode === "off")) {
+      await connection.request(mode === "off" ? "events/unsubscribe" : "events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
+    }
+    if (mode === "normal") this.changed(true);
+    return true;
   }
 
   dispose(): void {

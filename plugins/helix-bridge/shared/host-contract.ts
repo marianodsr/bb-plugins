@@ -135,6 +135,11 @@ export const hostContract = defineRpcContract({
     input: z.object({ bridgeDir: bridgeDirSchema, hxbPath: z.string().max(4096), fontFamily: z.string().max(256).nullable() }).strict(),
     output: z.object({ checks: z.array(checkSchema), hxbResolved: z.string().nullable(), hxbVersion: z.string().nullable() }),
   },
+  perfMode: {
+    experimental_description: "Diagnostics for latency A/B runs on one instance: normal, quiet (no updates to bb) or off (no event subscriptions).",
+    input: z.object({ instanceId: z.string(), mode: z.enum(["normal", "quiet", "off"]) }).strict(),
+    output: z.object({ found: z.boolean() }),
+  },
   ghosttyConfig: {
     experimental_description: "The user's Ghostty configuration, read only.",
     experimental_retryable: true,

@@ -104,3 +104,49 @@ was removed from the plugin's dependencies; `spike/SpikePage.tsx` and
 `hud`). Headless Chrome, 1440x900, stock hx 25.07 on the same Go file:
 key-to-paint 15.2 ms p50, 20.3 ms p95 (60 keys); 15.3 / 22.3 over 80 keys
 with 20 full redraws; paint work per frame 0.6 ms p50, 6.5 ms p95; WebGL.
+
+## Step 3: where the p95 goes (2026-11-17)
+
+Question: is the 48-54 ms key-to-paint p95 on the real fork (against ~20 ms
+with stock Helix) our position updates? Answer: no.
+
+**Interleaved A/B on one session and file** (`spike/ab.mjs`: rotating order,
+6 rounds of 40 cursor moves at 50 ms per mode, `bb hx perf-mode <mode>
+--instance <ours>`; HUD samples split into key-to-first-output and the rest).
+`off`: no event subscriptions; `quiet`: events folded in the host, no signal,
+so no server or UI update; `normal`: everything. `hxb` with the owner's
+config, `plugins/helix-bridge/server.ts`, 1440x900 headless, load average
+4-8:
+
+| | off | quiet | normal |
+|---|---|---|---|
+| key to paint, p50 / p95 | 15.0 / 18.1 ms | 15.2 / 18.4 | 15.5 / 18.4 |
+| key to first output, p50 / p95 | 6.8 / 10.1 ms | 6.6 / 9.9 | 7.3 / 10.3 |
+
+The same run while the shared Rust build held the load average at ~21: 16 /
+51.0, 16 / 50.3, 16 / 48.8 ms, the tail entirely in key-to-first-output, and
+it moved between rounds, not between modes.
+
+**Stock against fork, same surface, same throwaway config and file**
+(`spike/ab-binary.mjs`, blocks interleaved; load 5-10):
+
+| | hx 25.07 | hxb 25.07.1 |
+|---|---|---|
+| 4,100-line Go file, key to paint p50 / p95 | 14.4 / 17.8 ms | 32.8 / 36.0 |
+| same, key to first output p50 | 6.2 ms | 26.3 |
+| 410-line TypeScript file, key to paint p50 / p95 | 13.9 / 18.0 ms | 13.7 / 17.0 |
+
+**Without a browser** (`spike/rtt.mjs`: bb terminals attached over
+`/ws/terminals/<id>`, key to first output): `stty raw; cat` 3 ms p50; stock
+hx 1.9 ms on the Go file; hxb 26 ms, with or without the bridge connected
+(an `XDG_CACHE_HOME` the plugin does not watch), with the owner's config or a
+throwaway one, file on the command line or opened later. On large Rust (7,220
+lines) and TypeScript (24,774 lines) files both stay under 5 ms p95.
+
+What makes it slow: Go highlighting at width. The same hxb instance answers in
+1.8 ms at 53 columns and 26 ms at 100 or 140 (rows do not matter). With the Go
+`highlights.scm` and `locals.scm` emptied in a copy of the fork's runtime it
+is 1.9 ms; with injections emptied it is still 26 ms; reverting upstream
+#15997 (the newest Go highlights change) does not help. The queries and the
+highlighter are upstream's (the fork's base is newer than 25.07); none of it
+is bridge code.

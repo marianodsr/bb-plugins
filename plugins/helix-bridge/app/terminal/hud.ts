@@ -24,6 +24,7 @@ export class HudMeter {
   private awaitingPaint = false;
   private outputAt = 0;
   private readonly keyToPaint: number[] = [];
+  private readonly keyToOutput: number[] = [];
   private readonly redraws: number[] = [];
   private lastFrame = 0;
   private frameIntervals: number[] = [];
@@ -55,7 +56,9 @@ export class HudMeter {
       if (this.redraws.length > WINDOW) this.redraws.shift();
       if (this.pendingKey !== null && this.pendingKey <= this.outputAt) {
         this.keyToPaint.push(now - this.pendingKey);
+        this.keyToOutput.push(this.outputAt - this.pendingKey);
         if (this.keyToPaint.length > WINDOW) this.keyToPaint.shift();
+        if (this.keyToOutput.length > WINDOW) this.keyToOutput.shift();
         this.pendingKey = null;
       }
       this.frame(frameStart);
@@ -74,6 +77,27 @@ export class HudMeter {
       }
     }
     this.lastFrame = at;
+  }
+
+  /** Start a fresh measurement window (A/B runs). */
+  reset(): void {
+    this.keyToPaint.length = 0;
+    this.keyToOutput.length = 0;
+    this.redraws.length = 0;
+    this.frameIntervals = [];
+    this.dropped = 0;
+    this.frames = 0;
+    this.pendingKey = null;
+  }
+
+  /** Raw key-to-paint samples (ms), for drivers. */
+  samples(): number[] {
+    return [...this.keyToPaint];
+  }
+
+  /** Raw key-to-first-output samples (ms), paired with `samples()`. */
+  outputSamples(): number[] {
+    return [...this.keyToOutput];
   }
 
   snapshot(): HudSnapshot {

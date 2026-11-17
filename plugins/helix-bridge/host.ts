@@ -76,6 +76,7 @@ const entry = experimental_defineHostEntry({
       const current = managerFor(bridgeDir, context);
       return runDoctor({ bridgeDir: current.bridgeDir, hxbPath, fontFamily, instances: current.list() });
     },
+    perfMode: async ({ instanceId, mode }, context) => ({ found: await managerFor(null, context).setPerfMode(instanceId, mode) }),
     ghosttyConfig: () => readGhosttyConfig(),
   },
   dispose: () => {

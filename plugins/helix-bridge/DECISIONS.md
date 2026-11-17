@@ -158,3 +158,11 @@ conservatively. Newest last.
     Helix's status line; `:bb-comments-send` sends both kinds.
 33. **Shortcut**: "Helix: focus the editor" is Cmd+Shift+H (Cmd+Shift+E is
     bb's `pane.maximize.toggle`).
+34. **`bb hx perf-mode normal|quiet|off --instance <pid>`** is a diagnostic
+    for latency A/B runs on one instance (never picked for you): `quiet`
+    folds its events without signalling bb, `off` unsubscribes it from
+    every event. With the HUD on, `window.__helixHud` exposes raw samples
+    (`samples()`, `outputSamples()`, `reset()`). Measured: our updates cost
+    nothing visible on the key path (`spike/RESULTS.md`), so position
+    updates stay as they are (coalesced 150 ms in the host, 120 ms to the
+    app).
