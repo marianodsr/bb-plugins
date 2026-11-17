@@ -118,6 +118,7 @@ export default async function plugin(bb: BbPluginApi) {
     // :bb-files: the editor page for that thread shows its tree on the file.
     filesRequested: (threadId, path) => bb.realtime.publish("files", { threadId, path, at: Date.now() }),
     reloaded: async (instance, event) => {
+      bb.log.info(`Helix ${instance.key} reloaded ${String(event.path)} (${String(event.origin)}), ${Array.isArray(event.ranges) ? event.ranges.length : 0} range(s)`);
       if (instance.environmentId) reviews.noteChange(instance.environmentId);
       if (event.origin === "watch" && typeof event.path === "string" && Array.isArray(event.ranges)) follower.noteReloaded(instance.threadId, event.path, event.ranges as never);
       await watcher.onReloaded(instance, event).catch((error: unknown) => bb.log.warn(`following a reload on ${instance.key} failed: ${String(error)}`));
@@ -167,6 +168,7 @@ export default async function plugin(bb: BbPluginApi) {
     service,
     gitRead: async (hostId, input) => (await hostCall("gitRead", input as Record<string, unknown>, { hostId, timeoutMs: 20_000 })) as Awaited<ReturnType<ReviewDeps["gitRead"]>>,
     turnSnapshots: async () => (await settings.get()).reviewTurnSnapshots,
+    trace: (message) => bb.log.info(message),
     changed: (threadId) => {
       if (threadId) bb.rpc.experimental_invalidate([tags.review(threadId)]);
       bb.realtime.publish("review", { threadId, at: Date.now() });
@@ -320,7 +322,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (!instance) return { opened: false, message: "No Helix is open for this workspace" };
       let message = "";
       if (instance.summary.capabilities.includes("review") && !reviews.forInstance(instance.key)) message = await reviews.start(instance, target ?? "uncommitted").catch((error: unknown) => String(error instanceof Error ? error.message : error));
-      await service.show(instance, { path, interrupt: "always" });
+      // At the file's first change, as the :bb-review picker opens it.
+      const line = reviews.firstChange(instance.key, service.absolute(instance, path));
+      await service.show(instance, { path, ...(line !== null ? { line } : {}), interrupt: "always" });
       return { opened: true, message: message || "Opened in Helix" };
     },
     threadStatus: async ({ threadId }) => {

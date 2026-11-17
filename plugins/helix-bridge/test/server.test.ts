@@ -316,6 +316,8 @@ describe("reviews in the editor", () => {
     expect(opened).toMatchObject({ opened: true, message: expect.stringMatching(/^Reviewing Uncommitted changes/u) });
     expect(review()?.title).toBe("Uncommitted changes");
     expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(join(workspace, "util.go"));
+    // At the file's first change (the diff's hunk starts at line 3).
+    expect((mock.control({ cmd: "state" }).state as { focused: { selections: { start: { line: number } }[] } }).focused.selections[0]!.start.line).toBe(3);
   });
 
   it("names the review when its comments go to the agent", async () => {

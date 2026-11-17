@@ -52,6 +52,13 @@ refreshed only when something happens: a save or a reload in Helix in that
 workspace, bb's environment-change event, the end of an agent turn, or
 asking for the same target again. Never on a timer.
 
+In Helix a target is one argument, so a commit is quoted or given as a bare
+sha: `:bb-review "commit HEAD~1"`, `:bb-review 55143f2`. Bare `:bb-review`
+lists the review's files; `:bb-next` walks every change and `:bb-diff`
+switches the inline diff. Review Editor's "Open in Helix" opens the file at
+its first change, starting an uncommitted review if none is active. Every git
+read a review makes is logged (`bb plugin logs helix-bridge`, "git read: …").
+
 ## What runs in the background
 
 Kept small for very large repositories: nothing reads the working tree on a
@@ -61,8 +68,8 @@ timer or on every turn.
   and every 30 s the server reconciles instances and bindings. Neither
   touches the repository.
 - While an agent turn runs in a workspace a Helix serves, the plugin follows
-  the turn's events from bb (no repository reads) and, per edit, asks Helix
-  to reload or show that file. The changes list at the end of the turn is
+  the turn's events from bb (no repository reads) and, per edit, shows that
+  file (a Helix with `watch` reloads by itself; an older one is asked to). The changes list at the end of the turn is
   built from those edits and Helix's own reloads, with one read of each
   edited file through Helix; no git.
 - Git runs only for what you start: a review (`bb--git` files and diff, on
