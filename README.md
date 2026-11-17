@@ -27,6 +27,11 @@ plugin and the Review Editor it uses for comments:
 curl -fsSL https://raw.githubusercontent.com/marianodsr/helix/bb-bridge/bb-bridge/install.sh | sh
 ```
 
+Setting this up on a new Mac, or asking an agent to: follow
+[SETUP_ON_A_NEW_MAC.md](https://github.com/marianodsr/helix/blob/bb-bridge/bb-bridge/SETUP_ON_A_NEW_MAC.md)
+in the fork. It covers what to check first, what success looks like, what is
+left by hand, and what not to touch.
+
 Jira Viewer needs a Jira Cloud site, account email and API token, entered in
 Settings → Installed plugins → Jira Viewer. Run `bb jira-viewer check` after
 saving them.
