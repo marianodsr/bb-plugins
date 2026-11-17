@@ -22,18 +22,27 @@ export const TOOL_NAMES = [
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const text = (value: string, isError = false): ToolResult => ({ content: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) });
 
-const pathSchema = z.string().min(1).max(4096).describe("File path, relative to the workspace or absolute");
+const pathSchema = z.string().min(1).max(4096).describe("Relative to the workspace, or absolute");
 const line = z.number().int().min(1);
 const col = z.number().int().min(1);
 
-export const INSTRUCTIONS = [
-  "The user's Helix editor is connected to this thread (Helix Bridge).",
-  "- To take the user somewhere (\"show me\", \"take me to\"), find the place first (helix_query, or a search), then helix_show it; for several places in order use helix_tour with a note per stop. End your answer with one line saying where the user is now.",
-  "- helix_selection tells you what the user is looking at or has selected, with the text. helix_diagnostics and helix_query read the language server Helix already runs; prefer them over starting your own.",
-  "- helix_edit is for a change the user should watch happen in their editor; use your normal file tools for bulk edits.",
-  "- helix_command is for anything else, under Helix's command policy. Never use it for something a structured tool does, and never retry or work around a refusal.",
-  "- A result that says \"deferred\" is not a failure: the user is busy (typing, a prompt open or a key sequence half typed), and Helix shows \"bb wants to ... (:bb-go)\" to do it when they are ready.",
-].join("\n");
+/**
+ * The instruction a session gets with the tools: kept to what changes how an
+ * agent works (every line is context in every thread). Edit files with your
+ * normal tools: Helix shows the change by itself.
+ */
+export function instructionsFor(tools: readonly string[]): string {
+  const has = (name: string) => tools.includes(name);
+  return [
+    "The user's Helix editor is connected (Helix Bridge). Edit files with your normal tools; Helix shows the changes.",
+    "To take the user somewhere, find it (helix_query or a search), then helix_show it" + (has("helix_tour") ? ", or helix_tour for several places" : "") + "; end with one line saying where they are.",
+    "helix_selection: what they are looking at." + (has("helix_query") ? " helix_query and helix_diagnostics use the language server Helix already runs." : ""),
+    ...(has("helix_command") ? ["helix_command: anything else, under Helix's command policy; never work around a refusal."] : []),
+  ].join("\n");
+}
+
+/** The instruction with every tool offered (tests, docs). */
+export const INSTRUCTIONS = instructionsFor(TOOL_NAMES);
 
 export function registerTools(bb: BbPluginApi, service: HelixService): void {
   const run = (work: (instance: BoundInstance) => Promise<string>) => async (threadId: string): Promise<ToolResult> => {
@@ -54,7 +63,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
 
   bb.agents.registerTool({
     name: "helix_selection",
-    description: "What the user has selected in Helix, or the line under the cursor: file, positions and text, plus the file's unsaved state.",
+    description: "What the user has selected in Helix (or the cursor line): file, lines and text.",
     presentation: { label: { pending: "Reading the editor selection", completed: "Read the editor selection" } },
     parameters: z.object({ text: z.boolean().default(true).describe("Include the selected text") }).strict(),
     execute: ({ text: withText }, { threadId }) => run(async (instance) => selectionText(await service.selection(instance), instance, withText))(threadId),
@@ -62,20 +71,16 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
 
   bb.agents.registerTool({
     name: "helix_show",
-    description:
-      "Take the user to a place in their Helix editor: opens the file, selects the line or range, centres it, optionally in a new split or a given pane, with a one-line note on the status line. Reveals the editor in bb. Reports where the user landed, or that the jump is waiting because they are typing.",
+    description: "Take the user to a file and line (or lines line-endLine) in their Helix, with an optional one-line note.",
     presentation: { label: { pending: "Showing a place in Helix", completed: "Showed a place in Helix" } },
     parameters: z
       .object({
         path: pathSchema,
         line: line.optional(),
-        col: col.optional(),
-        endLine: line.optional().describe("Select through this line"),
-        endCol: col.optional().describe("End column, exclusive; omit to select through the end of endLine"),
-        split: z.enum(["none", "horizontal", "vertical"]).optional().describe("Open in a new split"),
-        pane: z.number().int().min(1).optional().describe("Open in this pane (see helix_panes)"),
-        note: z.string().max(200).optional().describe("One line shown on the status line, e.g. why this place matters"),
-        now: z.boolean().optional().describe("Move even if the user is busy (default: wait; Helix offers :bb-go)"),
+        endLine: line.optional(),
+        split: z.enum(["vertical", "horizontal"]).optional(),
+        note: z.string().max(200).optional(),
+        now: z.boolean().optional().describe("Move even if the user is typing"),
       })
       .strict(),
     execute: (args, { threadId }) =>
@@ -83,12 +88,9 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         const result = await service.show(instance, {
           path: args.path,
           ...(args.line !== undefined ? { line: args.line } : {}),
-          ...(args.col !== undefined ? { col: args.col } : {}),
-          // Without endCol, Helix selects through the end of endLine.
+          // Helix selects lines line to endLine whole.
           ...(args.endLine !== undefined ? { endLine: args.endLine } : {}),
-          ...(args.endLine !== undefined && args.endCol !== undefined ? { endCol: args.endCol } : {}),
           ...(args.split ? { split: args.split } : {}),
-          ...(args.pane !== undefined ? { pane: args.pane } : {}),
           ...(args.note ? { note: args.note } : {}),
           interrupt: args.now ? "always" : "whenIdle",
         });
@@ -101,16 +103,16 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
 
   bb.agents.registerTool({
     name: "helix_tour",
-    description: "Show the user several places in order, each with a note, and jump to the first. They walk it with :bb-next and :bb-prev (and :bb-locations to pick).",
+    description: "Show the user several places in order, each with a note; they walk it with :bb-next.",
     presentation: { label: { pending: "Setting up a tour in Helix", completed: "Set up a tour in Helix" } },
     parameters: z
       .object({
         title: z.string().min(1).max(120),
         stops: z
-          .array(z.object({ path: pathSchema, line, endLine: line.optional(), note: z.string().min(1).max(200).describe("Why this stop matters, one line") }).strict())
+          .array(z.object({ path: pathSchema, line, endLine: line.optional(), note: z.string().min(1).max(200) }).strict())
           .min(1)
           .max(100),
-        now: z.boolean().optional().describe("Jump even if the user is busy"),
+        now: z.boolean().optional(),
       })
       .strict(),
     execute: (args, { threadId }) =>
@@ -150,44 +152,40 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
 
   bb.agents.registerTool({
     name: "helix_diagnostics",
-    description: "Diagnostics the user's Helix holds from its language servers, errors first, for one file or the whole workspace.",
+    description: "Language-server diagnostics in the user's Helix, errors first, for a file or the workspace.",
     presentation: { label: { pending: "Reading editor diagnostics", completed: "Read editor diagnostics" } },
     parameters: z
       .object({
         path: pathSchema.optional(),
-        severity: z.enum(["error", "warning", "info", "hint"]).default("warning").describe("Minimum severity"),
-        limit: z.number().int().min(1).max(200).default(50),
-        offset: z.number().int().min(0).default(0),
+        severity: z.enum(["error", "warning", "info", "hint"]).default("warning"),
       })
       .strict(),
     execute: (args, { threadId }) =>
       run(async (instance) => {
-        const result = await service.diagnostics(instance, { ...(args.path ? { path: args.path } : {}), minSeverity: args.severity, limit: args.limit, offset: args.offset });
+        const result = await service.diagnostics(instance, { ...(args.path ? { path: args.path } : {}), minSeverity: args.severity, limit: 50, offset: 0 });
         return diagnosticsText(result.items, result.total, rootsOf(instance));
       })(threadId),
   });
 
   bb.agents.registerTool({
     name: "helix_query",
-    description:
-      "Ask the language server Helix already runs: definition, typeDefinition, implementation, references, hover, documentSymbols, workspaceSymbols, incomingCalls, outgoingCalls, renamePreview (not applied). Positions are 1-based line and column (characters).",
+    description: "Ask the language server Helix runs (renamePreview is not applied). Line and col are 1-based.",
     presentation: { label: { pending: "Querying the language server", completed: "Queried the language server" } },
     parameters: z
       .object({
         kind: z.enum(QUERY_KINDS),
-        path: pathSchema.optional().describe("The file (not needed for workspaceSymbols)"),
+        path: pathSchema.optional(),
         line: line.optional(),
         col: col.optional(),
-        query: z.string().max(200).optional().describe("Search text for workspaceSymbols"),
-        newName: z.string().max(200).optional().describe("For renamePreview"),
-        limit: z.number().int().min(1).max(200).default(50),
+        query: z.string().max(200).optional().describe("workspaceSymbols"),
+        newName: z.string().max(200).optional().describe("renamePreview"),
       })
       .strict(),
     execute: (args, { threadId }) =>
       run(async (instance) => {
         const result = await service.query(instance, {
           kind: args.kind,
-          limit: args.limit,
+          limit: 50,
           ...(args.path ? { path: args.path } : {}),
           ...(args.line !== undefined ? { line: args.line, col: args.col ?? 1 } : {}),
           ...(args.query !== undefined ? { query: args.query } : {}),

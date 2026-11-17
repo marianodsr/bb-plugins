@@ -28,7 +28,7 @@ export function errorName(code: number): ErrorName | null {
   return null;
 }
 
-export const CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal"] as const;
+export const CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal", "review", "watch"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 export const EVENT_KINDS = ["selection", "documents", "diagnostics", "mode", "send", "lsp", "externalChange"] as const;

@@ -41,12 +41,13 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
   1-based line and column. Prefer it to starting another server.
 - `helix_panes`: the panes and what each shows; focus or close one.
 
-## Change the editor
+## Change files and the editor
 
-- `helix_edit`: apply edits to a buffer as one undoable step the user sees
-  (left unsaved unless `save: true`). Use your normal file tools for bulk
-  changes; Helix reloads unchanged buffers when files change on disk.
-- `helix_command`: anything else, as exactly one of `typed` (a command line
+- Edit files with your normal file tools. Helix reloads what you change and
+  shows it to the user as it lands; there is nothing to do in the editor.
+  (`helix_edit`, editing inside the user's buffers, exists only if the user
+  turned on the `toolEdit` setting.)
+- `helix_command` (when offered): anything else, as exactly one of `typed` (a command line
   without the colon), `static` (a command name from Helix's key maps) or
   `keys` (Helix key notation). Helix's command policy (`safe` by default: no
   shell, nothing that discards unsaved work or speaks to bb in the user's
@@ -59,11 +60,11 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
 Some providers list these as deferred tools (for example
 `mcp__bb-bridge__helix_show`): load their schemas first.
 
-Which tools you get depends on what the connected Helix can do (each
-version of the fork adds capabilities): `helix_selection` and `helix_show`
-need only the basics; `helix_tour`, `helix_panes`, `helix_diagnostics`,
-`helix_query`, `helix_edit` and `helix_command` appear when Helix offers
-them. Tools are attached when your session starts with a connected Helix
+Which tools you get depends on what the connected Helix can do and on the
+user's settings: `helix_selection` and `helix_show` need only the basics;
+`helix_tour`, `helix_diagnostics` and `helix_query` appear when Helix offers
+them; `helix_panes`, `helix_command` and `helix_edit` only when the user
+allows them. Tools are attached when your session starts with a connected Helix
 serving the thread; a thread that started earlier gets them in its next
 session. Until then, use the CLI. A tool that answers "this Helix does not
 offer ... yet" is telling you a fact: say so instead of retrying.

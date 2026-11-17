@@ -291,3 +291,21 @@ conservatively. Newest last.
     first output naming the file): 39-116 ms for README.md, 93-183 ms for a
     Go file after its first open (Helix's own work for Go), against about
     830 ms through the bb CLI.
+53. **`watch`**: a Helix that watches its own open files gets no
+    `editor/reload` from the plugin (agent edits, the environment catch-all,
+    turn end). The `item/completed` long-poll stays only for navigation:
+    with "Follow the agent", a file the agent edited that is not open
+    (`editor/state` says which) is opened at the edit with the reveal. A
+    watch-origin `event/reloaded` during a turn of that thread moves the view
+    to its first range (whenIdle); outside a turn it does nothing. The
+    turn-end changes list stays git-based. Older builds keep the previous
+    behaviour.
+54. **Agent context**: `helix_edit` is offered only with the `toolEdit`
+    setting (default off): agents edit files with their own tools and Helix
+    shows it. `helix_panes` and `helix_command` have settings too (default
+    on for now). Descriptions and parameters were trimmed (`helix_show` lost
+    col, endCol and pane; query and diagnostics lost paging), and the
+    instruction names only the tools offered. Characters always in context
+    (tool schemas + instruction + skill listing): 8,365 before; 5,122 with
+    the defaults now; 3,813 with the core set (show, tour, selection, query,
+    diagnostics).

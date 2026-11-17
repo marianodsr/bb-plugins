@@ -175,7 +175,7 @@ export class HelixService {
 
   /** Without `reload`, buffers open before an agent edit may show old text. */
   mayBeStale(instance: BoundInstance): boolean {
-    if (instance.summary.capabilities.includes("reload") || !instance.environmentId) return false;
+    if (instance.summary.capabilities.includes("reload") || instance.summary.capabilities.includes("watch") || !instance.environmentId) return false;
     const edited = this.agentEdits.get(instance.environmentId);
     const started = instance.summary.startedAt ? Date.parse(instance.summary.startedAt) : 0;
     return edited !== undefined && edited > started;

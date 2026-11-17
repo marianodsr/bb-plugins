@@ -143,7 +143,7 @@ export class AgentWatcher {
   /** A turn started: follow its edits if a connected Helix serves its environment. */
   start(threadId: string, environmentId: string | null): void {
     if (!environmentId || this.loops.has(threadId)) return;
-    if (!this.serving(environmentId).some((i) => i.summary.capabilities.includes("reload"))) return;
+    if (!this.serving(environmentId).some((i) => i.summary.capabilities.includes("reload") || i.summary.capabilities.includes("watch"))) return;
     const controller = Object.assign(new AbortController(), { environmentId });
     this.loops.set(threadId, controller);
     void this.loop(threadId, environmentId, controller.signal).finally(() => {
@@ -195,13 +195,21 @@ export class AgentWatcher {
     }
   }
 
-  /** Reload exactly the edited files in every Helix serving the environment. */
+  /**
+   * Reload exactly the edited files in every Helix serving the environment.
+   * A Helix with `watch` reloads them itself (and shows them): then only the
+   * navigation is left, opening a file the agent edited that is not open.
+   */
   async onEdit(edit: FileEdit): Promise<void> {
     this.deps.service.noteAgentEdit(edit.environmentId);
     const settings = await this.deps.settings();
     if (!settings.autoReload) return;
     for (const instance of this.serving(edit.environmentId)) {
       const caps = new Set(instance.summary.capabilities);
+      if (caps.has("watch")) {
+        if (settings.followAgent && caps.has("reveal")) await this.openUnopened(instance, edit).catch((error: unknown) => this.deps.log(`opening an edited file on ${instance.key} failed: ${String(error)}`));
+        continue;
+      }
       if (!caps.has("reload")) continue;
       const reveal = caps.has("reveal");
       const follow = reveal && settings.followAgent;
@@ -220,6 +228,26 @@ export class AgentWatcher {
         this.deps.log(`reload after an agent edit on ${instance.key} failed: ${String(error)}`);
       }
     }
+  }
+
+  /** `watch`: Helix reloads open files by itself; open the edited files it does not have. */
+  private async openUnopened(instance: BoundInstance, edit: FileEdit): Promise<void> {
+    const state = await this.deps.service.bridge.call<{ documents: { path: string | null }[] }>(instance.key, "editor/state", {});
+    const open = new Set(state.documents.map((d) => d.path).filter((p): p is string => Boolean(p)));
+    await this.revealUnopened(instance, edit, { reloaded: [...open].filter((p) => edit.paths.includes(p)), unchanged: [], skippedModified: [], missing: [] });
+  }
+
+  /**
+   * `event/reloaded` from Helix's own watcher: while an agent's turn runs and
+   * "Follow the agent" is on, move the view to the change (Helix has already
+   * reloaded it and played the reveal).
+   */
+  async onReloaded(instance: BoundInstance, event: { path?: unknown; origin?: unknown; ranges?: unknown }): Promise<void> {
+    if (event.origin !== "watch" || typeof event.path !== "string" || !instance.environmentId || !this.watching(instance.environmentId)) return;
+    if (!(await this.deps.settings()).followAgent) return;
+    const first = Array.isArray(event.ranges) ? (event.ranges[0] as { start?: { line?: number } } | undefined) : undefined;
+    const line = typeof first?.start?.line === "number" ? first.start.line : 1;
+    await this.deps.service.bridge.call(instance.key, "editor/open", { path: event.path, line, interrupt: "whenIdle" });
   }
 
   private async revealUnopened(instance: BoundInstance, edit: FileEdit, result: ReloadOutcome): Promise<void> {

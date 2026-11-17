@@ -133,7 +133,8 @@ export class Follower {
   }
 
   async reload(instance: BoundInstance): Promise<ReloadResult | null> {
-    if (!instance.summary.capabilities.includes("reload")) return null;
+    // A Helix with `watch` reloads its buffers itself.
+    if (!instance.summary.capabilities.includes("reload") || instance.summary.capabilities.includes("watch")) return null;
     try {
       const result = await this.deps.service.reload(instance);
       this.lastReload.set(instance.key, { at: Date.now(), result });

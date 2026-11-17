@@ -51,6 +51,8 @@ export interface SendDeps {
   commentsChanged(): void;
   /** `:bb-files` in a Helix the editor page shows: open its tree on `path`. */
   filesRequested?(threadId: string, path: string | null): void;
+  /** Helix reloaded a buffer (`event/reloaded`). */
+  reloaded?(instance: BoundInstance, event: Record<string, unknown>): Promise<void>;
   /** `:bb-review <target>`: start or end a review. Returns the status-line text. */
   reviewRequested?(instance: BoundInstance, target: string): Promise<string>;
   log(message: string): void;
@@ -100,6 +102,10 @@ export class SendHandler {
   async handle(record: SendRecord, instance: BoundInstance | null): Promise<string> {
     if (!instance) return "dropped: the instance is gone";
     const kind = (record.event as { kind?: unknown }).kind;
+    if (kind === "reloaded") {
+      await this.deps.reloaded?.(instance, record.event);
+      return "reloaded";
+    }
     if (kind === "files" || kind === "review") return this.handleRequest(kind, record.event, instance);
     const parsed = sendEventSchema.safeParse(record.event);
     if (!parsed.success) {

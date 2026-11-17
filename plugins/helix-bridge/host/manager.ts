@@ -423,9 +423,11 @@ export class InstanceManager {
       }
       // :bb-files and :bb-review: user actions, handled by the server like sends.
       case "event/files":
-      case "event/review": {
+      case "event/review":
+      // A reload Helix made (by itself under `watch`): the server follows it.
+      case "event/reloaded": {
         this.sendSeq += 1;
-        this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { ...params, kind: method === "event/files" ? "files" : "review" } });
+        this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { ...params, kind: method === "event/files" ? "files" : method === "event/review" ? "review" : "reloaded" } });
         if (this.sends.length > MAX_SENDS) this.sends.splice(0, this.sends.length - MAX_SENDS);
         this.syncSendCounts();
         this.changed(true);

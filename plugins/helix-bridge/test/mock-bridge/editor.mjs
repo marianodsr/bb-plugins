@@ -328,12 +328,8 @@ export class Editor {
       if (disk === doc.diskText) out.unchanged.push(doc.path);
       else if (doc.modified && !force) out.skippedModified.push(doc.path);
       else {
-        doc.text = disk;
-        doc.diskText = disk;
-        doc.modified = false;
-        doc.version += 1;
+        this.applyDisk(doc, disk, "request");
         out.reloaded.push(doc.path);
-        this.emit("event/documentChanged", { docId: doc.docId, path: doc.path, version: doc.version, modified: false });
       }
     }
     if (wanted) for (const p of wanted) if (!this.docByPath(p) && !existsSync(p)) out.missing.push(p);
@@ -345,6 +341,44 @@ export class Editor {
       out.deferred = this.open({ path: first, line: 1, interrupt }).deferred;
     }
     return out;
+  }
+
+  /** Take the file's text from disk and say what changed (`event/reloaded`). */
+  applyDisk(doc, disk, origin) {
+    const before = lines(doc.text);
+    const after = lines(disk);
+    let first = 0;
+    while (first < before.length && first < after.length && before[first] === after[first]) first += 1;
+    let tailB = before.length - 1;
+    let tailA = after.length - 1;
+    while (tailB >= first && tailA >= first && before[tailB] === after[tailA]) {
+      tailB -= 1;
+      tailA -= 1;
+    }
+    doc.text = disk;
+    doc.diskText = disk;
+    doc.modified = false;
+    doc.version += 1;
+    this.emit("event/documentChanged", { docId: doc.docId, path: doc.path, version: doc.version, modified: false });
+    const ranges = tailA >= first ? [{ start: { line: first + 1, col: 1 }, end: { line: tailA + 2, col: 1 } }] : [];
+    this.emit("event/reloaded", { docId: doc.docId, path: doc.path, version: doc.version, ranges, removed: Math.max(0, tailB - first + 1), origin });
+  }
+
+  /** Capability `watch`: what Helix's own watcher does when open files change on disk. */
+  watchTick() {
+    const reloaded = [];
+    for (const doc of this.docs.values()) {
+      if (!doc.path || !existsSync(doc.path)) continue;
+      const disk = readFileSync(doc.path, "utf8");
+      if (disk === doc.diskText) continue;
+      if (doc.modified) {
+        this.emit("event/externalChange", { path: doc.path, modified: true });
+        continue;
+      }
+      this.applyDisk(doc, disk, "watch");
+      reloaded.push(doc.path);
+    }
+    return reloaded;
   }
 
   applyEdits({ path, version, edits, save = false }) {

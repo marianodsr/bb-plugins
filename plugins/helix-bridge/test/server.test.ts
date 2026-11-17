@@ -26,7 +26,7 @@ const run = promisify(execFile);
 import { chmodSync, readFileSync } from "node:fs";
 import { treeClientId } from "../server/tree";
 // @ts-expect-error plain ESM test helper without types
-import { startMockBridge } from "./mock-bridge/mock.mjs";
+import { ALL_CAPABILITIES, startMockBridge } from "./mock-bridge/mock.mjs";
 
 const workspace = join(import.meta.dirname, "fixtures", "workspace");
 const HOST = "host_test";
@@ -146,8 +146,11 @@ describe("instances and bindings", () => {
     const served = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
     );
-    expect(names(served.tools)).toEqual([...TOOL_NAMES]);
+    // helix_edit only with the toolEdit setting: agents edit files, Helix shows it.
+    expect(names(served.tools)).toEqual(TOOL_NAMES.filter((t) => t !== "helix_edit"));
     expect(served.instructions).toMatch(/helix_show/u);
+    expect(served.instructions).not.toMatch(/helix_edit/u);
+    expect(served.instructions).toMatch(/Edit files with your normal tools/u);
     const sameEnv = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_x" } as never, environment: { id: "env_test", path: workspace } as never }),
     );
@@ -224,8 +227,8 @@ describe("agent tools", () => {
   it("answers language-server queries as path:line with the preview", async () => {
     const def = await fake.harness.behavior.callAgentTool("helix_query", { kind: "definition", path: "util.go", line: 8, col: 16 }, ctx);
     expect(textOf(def)).toBe("main.go:10:6  func NewGreeter(name string) *Greeter {");
-    const refs = await fake.harness.behavior.callAgentTool("helix_query", { kind: "references", path: "main.go", line: 10, col: 6, limit: 1 }, ctx);
-    expect(textOf(refs)).toMatch(/\.\.\. 2 more/u);
+    const refs = await fake.harness.behavior.callAgentTool("helix_query", { kind: "references", path: "main.go", line: 10, col: 6 }, ctx);
+    expect(textOf(refs).split("\n")).toHaveLength(3);
   });
 
   it("reads the selection, diagnostics and panes", async () => {
@@ -355,7 +358,9 @@ describe("editor terminal", () => {
 describe("watching the agent write", () => {
   const fileChange = (path: string, status = "completed") => ({ type: "fileChange", status, changes: [{ path, kind: "update", diff: "" }] });
 
-  it("reloads exactly the edited file with reveal and follow, as each edit lands", async () => {
+  it("reloads exactly the edited file with reveal and follow, as each edit lands (a Helix without watch)", async () => {
+    await teardown();
+    await setupWithCapabilities(ALL_CAPABILITIES.filter((c: string) => c !== "watch"));
     const scratch = join(workspace, "scratch-watch.go");
     writeFileSync(scratch, "package main\n");
     try {
@@ -404,6 +409,48 @@ describe("watching the agent write", () => {
       expect(reveal).toMatchObject({ follow: true, ranges: [{ start: { line: 3, col: 1 }, end: { line: 4, col: 1 } }], removed: [{ line: 3, text: "func old() {}" }] });
       expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(scratch);
       await fake.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }), lastAssistantText: null });
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+  it("with watch, leaves reloading to Helix and follows its event/reloaded during a turn", async () => {
+    const scratch = join(workspace, "scratch-watched.go");
+    writeFileSync(scratch, "package main\n\nfunc a() {}\n");
+    try {
+      mock.control({ cmd: "select", path: "scratch-watched.go", line: 1 });
+      mock.control({ cmd: "select", path: "main.go", line: 1 });
+      let served = false;
+      fake.harness.sdk.stub("threads.events.list", async () => [{ seq: 30 }] as never);
+      fake.harness.sdk.stub("threads.events.wait", async ({ afterSeq }: { afterSeq?: string }) => {
+        if (afterSeq === "30" && !served) {
+          served = true;
+          writeFileSync(scratch, "package main\n\nfunc a() {}\n\nfunc b() {}\n");
+          return { seq: 31, createdAt: Date.now(), data: { item: { type: "fileChange", status: "completed", changes: [{ path: scratch, kind: "update", diff: "+func b() {}\n" }] } } } as never;
+        }
+        await wait(50);
+        return null as never;
+      });
+      const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+      await until(() => served);
+      await wait(300);
+      // The plugin sent no reload: nothing animated, the buffer is as it was.
+      expect(mock.control({ cmd: "state" }).reveals).toEqual([]);
+      // Helix's own watcher reloads it and says what changed; the view follows
+      // (once the user's last key is 1.5 s old: moving them sooner is deferred).
+      await wait(1600);
+      expect(mock.control({ cmd: "watch" }).reloaded).toEqual([scratch]);
+      await until(() => (mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path === scratch);
+      expect((mock.control({ cmd: "state" }).state as { focused: { selections: { start: { line: number } }[] } }).focused.selections[0]!.start.line).toBe(5);
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+      // Outside a turn (the user's own edits elsewhere) the view stays.
+      mock.control({ cmd: "select", path: "main.go", line: 1 });
+      await wait(1600);
+      writeFileSync(scratch, "package main\n\nfunc a() {}\n\nfunc c() {}\n");
+      mock.control({ cmd: "watch" });
+      await wait(400);
+      expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(join(workspace, "main.go"));
     } finally {
       rmSync(scratch, { force: true });
     }

@@ -16,7 +16,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { BridgeError, ERR, Editor } from "./editor.mjs";
 
-export const ALL_CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal"];
+export const ALL_CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal", "watch"];
 const EVENT_KINDS = ["selection", "documents", "diagnostics", "mode", "send", "lsp", "externalChange"];
 const KIND_OF = {
   "event/selection": "selection",
@@ -31,6 +31,7 @@ const KIND_OF = {
   "event/lsp": "lsp",
   "event/externalChange": "externalChange",
   "event/files": "files",
+  "event/reloaded": "documents",
   "event/review": "review",
 };
 /** Events the queue may drop when it overflows (all but send). */
@@ -349,6 +350,10 @@ export async function startMockBridge(options) {
         if (command.ms > 0) slow.set(command.method ?? "*", command.ms);
         else slow.delete(command.method ?? "*");
         return { ok: true };
+      case "watch":
+        // What Helix does by itself when open files change on disk (capability watch).
+        if (!has("watch")) return { ok: false, error: "no watch capability" };
+        return { ok: true, reloaded: editor.watchTick() };
       case "files": {
         // :bb-files: with a subscriber, the client shows its tree; without,
         // Helix runs its own file manager full screen.
