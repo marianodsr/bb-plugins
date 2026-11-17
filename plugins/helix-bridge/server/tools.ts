@@ -17,6 +17,7 @@ export const TOOL_NAMES = [
   "helix_query",
   "helix_edit",
   "helix_command",
+  "helix_review",
 ] as const;
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -44,7 +45,12 @@ export function instructionsFor(tools: readonly string[]): string {
 /** The instruction with every tool offered (tests, docs). */
 export const INSTRUCTIONS = instructionsFor(TOOL_NAMES);
 
-export function registerTools(bb: BbPluginApi, service: HelixService): void {
+export interface ToolHooks {
+  /** Start or end a review in this Helix; the status text. */
+  review?(instance: BoundInstance, target: string): Promise<string>;
+}
+
+export function registerTools(bb: BbPluginApi, service: HelixService, hooks: ToolHooks = {}): void {
   const run = (work: (instance: BoundInstance) => Promise<string>) => async (threadId: string): Promise<ToolResult> => {
     try {
       const serving = await service.instancesForThread(threadId);
@@ -249,6 +255,18 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           interrupt: args.now ? "always" : "whenIdle",
         });
         return commandText(result);
+      })(threadId),
+  });
+
+  bb.agents.registerTool({
+    name: "helix_review",
+    description: "Show the user changes as a review in Helix: target uncommitted, branch, pr, turn (your last turn), commit <sha>, or off.",
+    presentation: { label: { pending: "Starting a review in Helix", completed: "Started a review in Helix" } },
+    parameters: z.object({ target: z.string().min(1).max(240) }).strict(),
+    execute: ({ target }, { threadId }) =>
+      run(async (instance) => {
+        if (!hooks.review) throw new BridgeFailure("unsupported", "reviews are not available");
+        return hooks.review(instance, target);
       })(threadId),
   });
 }

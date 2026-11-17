@@ -11,6 +11,7 @@ import { EmptyState, StatusDot, ThreadChip } from "../../kit";
 import { useInstances, useThreadHelix, whereLabel } from "../data";
 import { composerFocusRequest } from "../stores";
 import { EditorSurface, surfaceControls } from "../surface/EditorSurface";
+import { ReviewControl } from "../review/ReviewParts";
 
 export const EDITOR_PANEL = "editor";
 
@@ -54,6 +55,7 @@ export function EditorHeader({ subPath }: { subPath: string }) {
         <Icon name="Folder" className="size-4" />
       </Button>
       <ThreadChip threadId={threadId} />
+      <ReviewControl threadId={threadId} />
       {instance ? (
         <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground" title={instance.status === "connected" ? "Helix is connected" : `Helix is ${instance.status}`}>
           <StatusDot status={instance.status === "connected" ? "running" : "failed"} />

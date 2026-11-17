@@ -57,6 +57,36 @@ export const rpcContract = defineRpcContract({
     output: z.object({ instance: appInstanceSchema.nullable(), candidates: z.number() }),
     tags: () => [tags.instances],
   },
+  reviewState: {
+    experimental_description: "The review active in the Helix serving a thread, if any, with its open comments.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({
+      capable: z.boolean(),
+      review: z.object({ id: z.string(), title: z.string(), target: z.string(), files: z.number(), additions: z.number(), deletions: z.number() }).nullable(),
+      openComments: z.number(),
+    }),
+    tags: ({ threadId }) => [tags.review(threadId), tags.instances],
+  },
+  startReview: {
+    experimental_description: "Start a review in the thread's Helix: uncommitted, branch, pr, turn, commit <sha>, or off to end it.",
+    input: z.object({ threadId: id, target: z.string().max(240) }).strict(),
+    output: z.object({ message: z.string() }),
+  },
+  sendReviewComments: {
+    experimental_description: "Send the thread's pending comments to its agent, naming the active review.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ message: z.string() }),
+  },
+  environmentStatus: {
+    experimental_description: "Whether a connected Helix serves this environment, and whether it can review (Review Editor's Open in Helix).",
+    input: z.object({ environmentId: id, threadId: id.optional() }).strict(),
+    output: z.object({ serves: z.boolean(), review: z.boolean() }),
+  },
+  openInReview: {
+    experimental_description: "Open a changed file in the Helix serving an environment, with a review active (Review Editor's changed-files list).",
+    input: z.object({ environmentId: id, threadId: id.optional(), path: z.string().min(1).max(4096), target: z.string().max(240).optional() }).strict(),
+    output: z.object({ opened: z.boolean(), message: z.string() }),
+  },
   bind: {
     experimental_description: "Bind an instance to a thread.",
     input: z.object({ instanceKey, threadId: id }).strict(),

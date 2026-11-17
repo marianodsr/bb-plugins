@@ -43,6 +43,7 @@ export const TOOL_CAPABILITY = {
   helix_query: "lsp",
   helix_edit: "applyEdits",
   helix_command: "command",
+  helix_review: "review",
 } as const satisfies Record<string, Capability>;
 
 /** editor/command's result (PROTOCOL_NOTES.md, step 2c). */

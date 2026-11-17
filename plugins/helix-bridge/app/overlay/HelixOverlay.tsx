@@ -16,6 +16,7 @@ import { arrivals, commandRequest, composerFocusRequest } from "../stores";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { visibleSurfaces } from "../surface/EditorSurface";
 import { BindDialog } from "../thread/ThreadParts";
+import { ReviewDialog } from "../review/ReviewParts";
 
 export { arrivals, commandRequest, composerFocusRequest, useArrival } from "../stores";
 
@@ -32,7 +33,7 @@ export function HelixOverlay() {
   const request = useSyncExternalStore(commandRequest.subscribe, commandRequest.get);
 
   useEffect(() => {
-    if (!request || request.kind === "bind") return;
+    if (!request || request.kind === "bind" || request.kind === "review") return;
     commandRequest.set(null);
     if (request.kind === "open") {
       navigate.toPluginPanel(EDITOR_PANEL, { subPath: request.threadId });
@@ -119,5 +120,6 @@ export function HelixOverlay() {
     });
   });
 
+  if (request?.kind === "review") return <ReviewDialog threadId={request.threadId} open onOpenChange={(open) => !open && commandRequest.set(null)} />;
   return request?.kind === "bind" ? <BindDialog threadId={request.threadId} open onOpenChange={(open) => !open && commandRequest.set(null)} /> : null;
 }

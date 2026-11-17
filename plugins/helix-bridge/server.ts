@@ -52,6 +52,7 @@ export default async function plugin(bb: BbPluginApi) {
     toolSelection: { type: "boolean", label: "Agent tool: helix_selection", description: "Offer agents a tool to read what you have selected in Helix. Off: send it with :bb-send.", default: false },
     toolQuery: { type: "boolean", label: "Agent tool: helix_query", description: "Offer agents the language server Helix runs. Off: they use their own (gopls, etc.).", default: false },
     toolDiagnostics: { type: "boolean", label: "Agent tool: helix_diagnostics", description: "Offer agents the diagnostics Helix holds. Off: they run their own checks.", default: false },
+    toolReview: { type: "boolean", label: "Agent tool: helix_review", description: "Offer agents a tool to start a review in Helix. Off: they use bb hx review.", default: false },
     toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
     toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
     toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
@@ -272,6 +273,49 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(rpcContract, {
     instances: async () => ({ instances: await Promise.all(bridge.list().map(appInstance)), hosts: bridge.hostStates() }),
+    reviewState: async ({ threadId }) => {
+      const instance = (await service.instancesForThread(threadId))[0] ?? null;
+      const review = reviews.forThread(threadId);
+      let openComments = 0;
+      const info = await service.threadInfo(threadId);
+      if (info.environmentId && (await sends.reviewEditorRunning())) {
+        const { comments } = await bb.sdk.plugins
+          .callRpc({ pluginId: "review-editor", method: "listComments", input: { environmentId: info.environmentId, states: ["open"] }, outputSchema: z.object({ comments: z.array(z.object({ threadId: z.string().nullable() }).passthrough()) }) })
+          .catch(() => ({ comments: [] as { threadId: string | null }[] }));
+        openComments = comments.filter((c) => c.threadId === threadId || c.threadId === null).length;
+      }
+      return {
+        capable: Boolean(instance?.summary.capabilities.includes("review")),
+        review: review ? { id: review.id, title: review.title, target: review.target.kind === "commit" ? `commit ${review.target.rev}` : review.target.kind, files: review.files, additions: review.additions, deletions: review.deletions } : null,
+        openComments,
+      };
+    },
+    startReview: async ({ threadId, target }) => {
+      const instance = (await service.instancesForThread(threadId))[0];
+      if (!instance) throw new Error("No Helix is connected to this thread");
+      return { message: await reviews.start(instance, target, { interrupt: "always" }) };
+    },
+    sendReviewComments: async ({ threadId }) => {
+      const instance = (await service.instancesForThread(threadId))[0];
+      if (!instance) throw new Error("No Helix is connected to this thread");
+      return { message: await sends.flushFor(instance) };
+    },
+    environmentStatus: async ({ environmentId, threadId }) => {
+      // From a thread's Review tab: only that thread's Helix (several threads can share a workspace).
+      const serving = threadId ? await service.instancesForThread(threadId) : bridge.list().filter((i) => i.summary.status === "connected" && i.environmentId === environmentId);
+      return { serves: serving.length > 0, review: serving.some((i) => i.summary.capabilities.includes("review")) };
+    },
+    openInReview: async ({ environmentId, threadId, path, target }) => {
+      // Review Editor's changed-files list: the Helix serving that thread (or,
+      // without one, the workspace), with a review active (started if there is
+      // none), on that file.
+      const instance = threadId ? (await service.instancesForThread(threadId))[0] : bridge.list().find((i) => i.summary.status === "connected" && i.environmentId === environmentId);
+      if (!instance) return { opened: false, message: "No Helix is open for this workspace" };
+      let message = "";
+      if (instance.summary.capabilities.includes("review") && !reviews.forInstance(instance.key)) message = await reviews.start(instance, target ?? "uncommitted").catch((error: unknown) => String(error instanceof Error ? error.message : error));
+      await service.show(instance, { path, interrupt: "always" });
+      return { opened: true, message: message || "Opened in Helix" };
+    },
     threadStatus: async ({ threadId }) => {
       const serving = await service.instancesForThread(threadId);
       return { instance: serving[0] ? await appInstance(serving[0]) : null, candidates: bridge.list().length };
@@ -350,8 +394,9 @@ export default async function plugin(bb: BbPluginApi) {
   registerCli(bb, service, {
     // A file chosen in the tree went to Helix: the app moves focus there.
     treeOpened: (threadId) => bb.realtime.publish("tree-open", { threadId, at: Date.now() }),
+    review: (instance, target) => reviews.start(instance, target, { interrupt: "always" }),
   });
-  registerTools(bb, service);
+  registerTools(bb, service, { review: (instance, target) => reviews.start(instance, target) });
 
   // The editor position on outgoing messages: the composer keeps a "Helix"
   // pill in the draft (its toggle), and this resolves it at send time into
@@ -378,7 +423,7 @@ export default async function plugin(bb: BbPluginApi) {
   // before Helix connected gets them on its next session.
   // No agent tool is offered unless its setting is on: agents get the skill
   // (one listing line) and use bb hx. configure is synchronous: kept current.
-  type Switches = Record<"toolShow" | "toolTour" | "toolSelection" | "toolQuery" | "toolDiagnostics" | "toolEdit" | "toolPanes" | "toolCommand", boolean>;
+  type Switches = Record<"toolShow" | "toolTour" | "toolSelection" | "toolQuery" | "toolDiagnostics" | "toolReview" | "toolEdit" | "toolPanes" | "toolCommand", boolean>;
   let switches: Record<string, boolean> = {};
   const readSwitches = (v: Switches) =>
     (switches = {
@@ -390,6 +435,7 @@ export default async function plugin(bb: BbPluginApi) {
       helix_edit: v.toolEdit,
       helix_panes: v.toolPanes,
       helix_command: v.toolCommand,
+      helix_review: v.toolReview,
     });
   void settings.get().then(readSwitches, () => {});
   settings.onChange((next) => readSwitches(next));

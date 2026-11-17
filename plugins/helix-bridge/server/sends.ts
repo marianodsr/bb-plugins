@@ -14,7 +14,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { SendRecord } from "../shared/host-contract";
 import type { SendEvent } from "../shared/protocol";
-import { type BoundInstance, within } from "./bridge";
+import { BridgeFailure, type BoundInstance, within } from "./bridge";
 import { capLines, displayPath, fence, lineSpan, rangeLines, rootsOf } from "./format";
 import type { HelixService } from "./service";
 import type { LocalComment, Store } from "./store";
@@ -241,6 +241,14 @@ export class SendHandler {
       outputSchema: z.object({ comments: z.array(reviewCommentSchema) }),
     });
     return comments.filter((c) => c.threadId === threadId);
+  }
+
+  /** Send this Helix's pending comments to its thread (the editor page's Send comments). */
+  async flushFor(instance: BoundInstance): Promise<string> {
+    if (!instance.threadId) throw new BridgeFailure("not_found", "this Helix is not bound to a thread");
+    const info = await this.deps.service.threadInfo(instance.threadId);
+    const result = await this.flush(instance, instance.threadId, info.title ?? instance.threadId, info.environmentId);
+    return result === "flushed 0" ? "No pending comments" : `Sent the comments to ${info.title ?? "the thread"}`;
   }
 
   private async flush(instance: BoundInstance, threadId: string, title: string, environmentId: string | null): Promise<string> {

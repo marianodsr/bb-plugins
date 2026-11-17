@@ -324,3 +324,26 @@ conservatively. Newest last.
     skill text is `skills/helix-bridge/tools.md`, for people who turn tools
     on. Checked with a real agent in a fresh thread: it loaded the skill,
     searched, ran `bb hx open util.go:7-9`, and Helix landed there.
+56. **Reviews** (`server/review.ts`, capability `review`): targets are
+    resolved per environment. `uncommitted` is against HEAD (`base: null`);
+    `branch` and `pr` use bb's Git plugin `files` with `all` against the
+    base branch, whose `mergeBaseRef` is the base; `pr` takes the base
+    branch from the GitHub pull-request plugin. `commit <rev>` is resolved
+    and compared with its parent by read-only git on the host (`gitRead`).
+    `turn` compares with the snapshot its last agent turn started from
+    (`git stash create`, which writes a commit object and moves nothing; HEAD
+    when clean; untracked files at the start are left out), taken only
+    where a Helix that can review serves the environment. Every hunk becomes
+    the `review` locations list. An active review is re-resolved after
+    environment changes and Helix reloads (debounced 700 ms) and every 4 s,
+    and re-sent with the same id only when it changed.
+57. **Starting a review**: `:bb-review <target>` (event/review through the
+    send queue), `bb hx review [target]`, the editor page's review control
+    and the palette command "Helix: review changes in the editor" (the same
+    dialog: targets, a commit field, the active review with its open
+    comments, Send comments, End review), Review Editor's "Open in Helix"
+    (thread-scoped: never another thread's Helix), and `helix_review`
+    (setting `toolReview`, off).
+58. **The handoff names the review**: with a review active, comments sent
+    from Helix or the page go as Review Editor's compiled prompt with
+    "Review of <title>." on top (compilePrompt, threads.send, markSent).

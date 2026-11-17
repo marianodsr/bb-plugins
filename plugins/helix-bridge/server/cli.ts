@@ -74,6 +74,8 @@ export function queryText(kind: QueryKind, result: Record<string, unknown>, root
 export interface CliHooks {
   /** `tree-open` sent files to the Helix serving this thread. */
   treeOpened?(threadId: string): void;
+  /** Start or end a review; the status text. */
+  review?(instance: BoundInstance, target: string): Promise<string>;
 }
 
 export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHooks = {}): void {
@@ -151,6 +153,18 @@ export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHo
               const where = `${displayPath(result.path, rootsOf(instance))}${location.line ? `:${location.line}${location.endLine ? `-${location.endLine}` : ""}` : ""}`;
               const stale = result.stale ? "\nThe buffer may be stale: files changed on disk during an agent's turn and reload is not available in this Helix yet (:reload)." : "";
               return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed). Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane && options.split && options.split !== "none" ? ` in pane ${result.pane}` : ""}.${stale}` };
+            });
+          },
+        }),
+        review: cliCommand({
+          summary: "Show the user changes as a review in their Helix: uncommitted, branch, pr, turn, commit <sha>, or off",
+          positionals: [{ name: "target", description: "uncommitted (default), branch, pr, turn, commit <sha>, off", variadic: true }],
+          options: { instance: instanceOption },
+          async run({ positionals, options }, ctx) {
+            return guard(async () => {
+              if (!hooks.review) fail("reviews are not available", "unsupported");
+              const instance = await target(options.instance, ctx.threadId);
+              return { exitCode: 0, stdout: await hooks.review!(instance, positionals.target.join(" ") || "uncommitted") };
             });
           },
         }),

@@ -115,6 +115,14 @@ export default definePluginApp((app) => {
     run: () => [...surfaceControls.values()][0]?.toggleTree(),
   });
   app.commands.register({
+    id: "review",
+    title: "Helix: review changes in the editor",
+    isAvailable: ({ threadId }) => threadId !== null,
+    run: ({ threadId }) => {
+      if (threadId) commandRequest.set({ kind: "review", threadId, at: Date.now() });
+    },
+  });
+  app.commands.register({
     id: "bind",
     title: "Helix: bind this thread to a running Helix",
     isAvailable: ({ threadId }) => threadId !== null,

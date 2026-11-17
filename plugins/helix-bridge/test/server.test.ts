@@ -19,6 +19,7 @@ import { TOOL_NAMES } from "../server/tools";
 import { commentItems, type ReviewComment } from "../server/annotations";
 import { editedPaths, revealOf } from "../server/watch";
 import { OPENER_SCRIPT, treeYaziToml } from "../host/yazi";
+import { revParse as gitRevParse, subject as gitSubject } from "../host/git";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -111,6 +112,14 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
           return { sends: manager.pendingSends() };
         case "ackSends":
           return { remaining: manager.ackSends(args.ids as string[]) };
+        case "gitRead": {
+          // The host's read-only git, run here.
+          const cwd = String(args.cwd);
+          const rev = args.rev as string | undefined;
+          if (args.op === "revParse") return { sha: rev ? await gitRevParse(cwd, rev) : null, error: null };
+          if (args.op === "subject") return { subject: rev ? await gitSubject(cwd, rev) : "", error: null };
+          throw new Error(`unexpected gitRead ${String(args.op)}`);
+        }
         default:
           throw new Error(`unexpected host call ${method}`);
       }
@@ -196,6 +205,94 @@ describe("capabilities", () => {
     await setupWithCapabilities(["editor", "reload", "locations", "diagnostics", "lsp"]);
     extraSettings = {};
     expect(names((await fake.harness.behavior.resolveAgentConfiguration(context)).tools)).toEqual(["helix_selection", "helix_show", "helix_tour", "helix_diagnostics", "helix_query"]);
+  });
+});
+
+describe("reviews in the editor", () => {
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const parent = execFileSync("git", ["rev-parse", "HEAD^"], { encoding: "utf8" }).trim();
+  const base = "a".repeat(40);
+  let files: { path: string; previousPath: string | null; changeKind: string; additions: number; deletions: number }[] = [];
+  const hunkDiff = (path: string) => [`--- a/${path}`, `+++ b/${path}`, "@@ -3,1 +3,1 @@", "-old", "+new"].join("\n");
+  const reviewSetup = async (extra: Record<string, unknown> = {}) => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" }, {
+      plugins: {
+        list: async () => [{ id: "review-editor", status: "running" }],
+        callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: { target?: { type: string } } }) => {
+          if (pluginId === "bb--git" && method === "workspaceStatus") return { outcome: "available", workspace: { branch: { currentBranch: "feature", defaultBranch: "main" }, checkout: { headSha: head } } };
+          if (pluginId === "bb--git" && method === "files") return { outcome: "available", files, mergeBaseRef: input.target?.type === "all" ? base : null, truncated: false, shortstat: "", initialPatches: [] };
+          if (pluginId === "bb--git" && method === "diff") return { outcome: "available", diff: { diff: files.map((f) => hunkDiff(f.path)).join("\n"), truncated: false } };
+          if (pluginId === "bb--github-pr-status") return { env_test: { outcome: "absent" } };
+          if (pluginId === "review-editor" && method === "listComments") return { comments: [{ id: "rc_1", threadId: "thr_term", state: "open", path: "main.go", startLine: 10, endLine: 10, body: "why?", resolvedBy: null, acknowledgedAt: null, replies: [], severity: "note" }] };
+          if (pluginId === "review-editor" && method === "compilePrompt") return { prompt: "COMPILED PROMPT" };
+          if (pluginId === "review-editor" && method === "markSent") return { comments: [] };
+          throw new Error(`unexpected ${pluginId} ${method}`);
+        },
+        ...extra,
+      },
+    } as never);
+    await until(() => (mock.control({ cmd: "state" }).subscriptions as string[][]).some((x) => x.includes("review")));
+  };
+  const review = () => mock.control({ cmd: "state" }).review as { id: string; title: string; base: string | null; files: { path: string; status: string }[] } | null;
+
+  it("starts a review from :bb-review, keeps it current, and ends it with off", async () => {
+    files = [{ path: "main.go", previousPath: null, changeKind: "modified", additions: 2, deletions: 1 }];
+    await reviewSetup();
+    mock.control({ cmd: "review", target: "branch" });
+    await until(() => review()?.base === base);
+    expect(review()).toMatchObject({ title: "This branch (feature) against main", files: [{ path: join(workspace, "main.go"), status: "modified" }] });
+    expect(mock.control({ cmd: "state" }).lists).toMatchObject({ review: 1 });
+    await until(() => /Reviewing This branch \(feature\) against main: 1 file, \+2 -1/u.test(String((mock.control({ cmd: "state" }).status as { message?: string } | null)?.message ?? "")));
+    // The agent adds a file: the same review grows, without a new id.
+    const id = review()!.id;
+    files = [...files, { path: "util.go", previousPath: null, changeKind: "added", additions: 9, deletions: 0 }];
+    await until(() => review()?.files.length === 2, 8000);
+    expect(review()!.id).toBe(id);
+    expect(mock.control({ cmd: "state" }).lists).toMatchObject({ review: 2 });
+    // The page reads it.
+    expect(await fake.harness.behavior.callRpc("reviewState", { threadId: "thr_term" })).toMatchObject({ capable: true, review: { target: "branch", files: 2 }, openComments: 1 });
+    mock.control({ cmd: "review", target: "off" });
+    await until(() => review() === null);
+  });
+
+  it("compares uncommitted changes with HEAD and a commit with its parent", async () => {
+    files = [{ path: "util.go", previousPath: null, changeKind: "modified", additions: 1, deletions: 1 }];
+    await reviewSetup();
+    mock.control({ cmd: "review", target: "uncommitted" });
+    await until(() => review()?.title === "Uncommitted changes");
+    expect(review()!.base).toBeNull();
+    const out = await fake.harness.behavior.runCli(["review", "commit", head.slice(0, 10)], { threadId: "thr_term" });
+    expect(out.stdout).toMatch(new RegExp(`^Reviewing Commit ${head.slice(0, 7)}`, "u"));
+    expect(review()!.base).toBe(parent);
+  });
+
+  it("says why a review cannot start", async () => {
+    await reviewSetup();
+    expect((await fake.harness.behavior.runCli(["review", "pr"], { threadId: "thr_term" })).stderr).toMatch(/this branch has no pull request/u);
+    expect((await fake.harness.behavior.runCli(["review", "turn"], { threadId: "thr_term" })).stderr).toMatch(/no agent turn recorded/u);
+    expect((await fake.harness.behavior.runCli(["review", "sideways"], { threadId: "thr_term" })).stderr).toMatch(/unknown review target "sideways"/u);
+  });
+
+  it("opens a file from Review Editor's list in the thread's own Helix, with a review active", async () => {
+    files = [{ path: "util.go", previousPath: null, changeKind: "modified", additions: 1, deletions: 1 }];
+    await reviewSetup();
+    expect(await fake.harness.behavior.callRpc("environmentStatus", { environmentId: "env_test", threadId: "thr_nobody" })).toEqual({ serves: false, review: false });
+    expect(await fake.harness.behavior.callRpc("environmentStatus", { environmentId: "env_test", threadId: "thr_term" })).toEqual({ serves: true, review: true });
+    const opened = await fake.harness.behavior.callRpc("openInReview", { environmentId: "env_test", threadId: "thr_term", path: "util.go" });
+    expect(opened).toMatchObject({ opened: true, message: expect.stringMatching(/^Reviewing Uncommitted changes/u) });
+    expect(review()?.title).toBe("Uncommitted changes");
+    expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(join(workspace, "util.go"));
+  });
+
+  it("names the review when its comments go to the agent", async () => {
+    files = [{ path: "main.go", previousPath: null, changeKind: "modified", additions: 2, deletions: 1 }];
+    await reviewSetup();
+    mock.control({ cmd: "review", target: "branch" });
+    await until(() => review()?.base === base);
+    sent = [];
+    expect(await fake.harness.behavior.callRpc("sendReviewComments", { threadId: "thr_term" })).toMatchObject({ message: expect.stringMatching(/Sent the comments/u) });
+    expect(sent[0]?.text).toBe("Review of This branch (feature) against main.\n\nCOMPILED PROMPT");
   });
 });
 
