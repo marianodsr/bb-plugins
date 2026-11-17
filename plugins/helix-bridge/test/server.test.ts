@@ -394,6 +394,39 @@ describe("watching the agent write", () => {
     }
   });
 
+  it("lists at turn end only the hunks the turn added", async () => {
+    const hunk = (path: string, line: number, old: string, now: string) => [`--- a/${path}`, `+++ b/${path}`, `@@ -${line},1 +${line},1 @@`, `-${old}`, `+${now}`].join("\n");
+    const earlier = hunk("main.go", 3, "a", "b");
+    let diff = earlier;
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" }, {
+      plugins: {
+        list: async () => [],
+        callRpc: async ({ method }: { method: string }) => {
+          if (method === "workspaceStatus") return { outcome: "available", workspace: { checkout: { headSha: "abc" } } };
+          if (method === "diff") return { outcome: "available", diff: { diff, truncated: false } };
+          throw new Error(`unexpected ${method}`);
+        },
+      },
+    });
+    const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
+    const lists = () => mock.control({ cmd: "state" }).lists as Record<string, number>;
+    fake.harness.sdk.stub("threads.events.list", async () => [] as never);
+    fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
+    // The turn adds one hunk to a diff that already had one.
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    await wait(100);
+    diff = `${earlier}\n${hunk("util.go", 7, "x", "y")}`;
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    await until(() => lists().changes === 1);
+    // A turn that changes nothing leaves that list alone.
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    await wait(100);
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    await wait(300);
+    expect(lists().changes).toBe(1);
+  });
+
   it("finds where a diff without line numbers landed", () => {
     const text = "a\nb\nnew one\nnew two\nc\n";
     expect(revealOf("--- a/x\n+++ b/x\n-old\n+new one\n+new two\n", text)).toEqual({ ranges: [{ start: { line: 3, col: 1 }, end: { line: 5, col: 1 } }], removed: [{ line: 3, text: "old" }] });

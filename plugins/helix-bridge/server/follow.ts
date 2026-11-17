@@ -23,7 +23,12 @@ const MAX_CHANGES = 2000;
  * header's counts). Deleted files are skipped.
  */
 export function hunksFromDiff(diff: string, root: string): LocationItem[] {
-  const items: LocationItem[] = [];
+  return diffHunks(diff, root).map((h) => h.item);
+}
+
+/** As `hunksFromDiff`, each with a key (path and changed lines) to tell hunks apart across two diffs. */
+export function diffHunks(diff: string, root: string): { item: LocationItem; key: string }[] {
+  const items: { item: LocationItem; key: string }[] = [];
   let path: string | null = null;
   let hunk: { start: number; added: number; removed: number; body: string[] } | null = null;
   const finish = () => {
@@ -50,8 +55,9 @@ export function hunksFromDiff(diff: string, root: string): LocationItem[] {
       last = added > 0 ? hunk.start + added - 1 : null;
     }
     const label = `+${added} -${removed}`;
+    const key = `${path}\0${hunk.body.filter((b) => b.startsWith("+") || b.startsWith("-")).join("\n") || `${hunk.start},${hunk.added},${hunk.removed}`}`;
     // A pure deletion has no new lines; point at the line after it.
-    items.push(added > 0 && last !== null ? { path, line: first ?? hunk.start, endLine: last, label } : { path, line: Math.max(1, first ?? hunk.start), label });
+    items.push({ item: added > 0 && last !== null ? { path, line: first ?? hunk.start, endLine: last, label } : { path, line: Math.max(1, first ?? hunk.start), label }, key });
     hunk = null;
   };
   for (const line of diff.split("\n")) {
@@ -95,6 +101,8 @@ export interface FollowDeps {
 export class Follower {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly turnStartHead = new Map<string, string>();
+  /** Per thread: the hunks already uncommitted when its turn started. */
+  private readonly turnStartHunks = new Map<string, Set<string>>();
   readonly lastReload = new Map<string, { at: number; result: ReloadResult }>();
 
   constructor(private readonly deps: FollowDeps) {}
@@ -155,13 +163,25 @@ export class Follower {
     if (!environmentId || this.serving(environmentId).length === 0) return;
     const sha = await this.head(environmentId);
     if (sha) this.turnStartHead.set(threadId, sha);
+    // Changes left from earlier turns (or the user) are not this turn's.
+    const info = await this.deps.service.threadInfo(threadId);
+    const before = info.path ? await this.diff(environmentId, { type: "uncommitted" }, info.path).catch(() => null) : null;
+    if (before) this.turnStartHunks.set(threadId, new Set(before.map((h) => h.key)));
+  }
+
+  private async diff(environmentId: string, target: Record<string, string>, root: string): Promise<{ item: LocationItem; key: string }[] | null> {
+    const result = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "diff", input: { environmentId, target, maxDiffBytes: 2_000_000 }, outputSchema: diffSchema });
+    if (result.outcome !== "available" || !result.diff) return null;
+    return diffHunks(result.diff.diff, root);
   }
 
   async onTurnEnd(threadId: string, environmentId: string | null): Promise<void> {
     if (!environmentId) return;
     const instances = this.serving(environmentId);
     const start = this.turnStartHead.get(threadId) ?? null;
+    const before = this.turnStartHunks.get(threadId) ?? null;
     this.turnStartHead.delete(threadId);
+    this.turnStartHunks.delete(threadId);
     if (instances.length === 0) return;
     const settings = await this.deps.settings();
     if (settings.autoReload) for (const instance of instances) await this.reload(instance);
@@ -172,13 +192,17 @@ export class Follower {
     const target: Record<string, string> = start && now && start !== now ? { type: "all", mergeBaseBranch: start } : { type: "uncommitted" };
     let items: LocationItem[] = [];
     try {
-      const result = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "diff", input: { environmentId, target, maxDiffBytes: 2_000_000 }, outputSchema: diffSchema });
-      if (result.outcome !== "available" || !result.diff) return;
-      items = hunksFromDiff(result.diff.diff, info.path);
+      const hunks = await this.diff(environmentId, target, info.path);
+      if (!hunks) return;
+      // Both diffs are against the HEAD the turn started on, so a hunk that
+      // was already there is the same text.
+      items = hunks.filter((h) => !before?.has(h.key)).map((h) => h.item);
     } catch (error) {
       this.deps.log(`changes for ${threadId} failed: ${String(error)}`);
       return;
     }
+    // A turn that changed nothing leaves the last list as it was.
+    if (items.length === 0 && before) return;
     const files = new Set(items.map((i) => i.path)).size;
     for (const instance of instances) {
       if (!instance.summary.capabilities.includes("locations")) continue;
