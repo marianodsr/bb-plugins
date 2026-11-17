@@ -192,7 +192,7 @@ describe("calls", () => {
     const unknown = await m.call(instance.id, "editor/fly", {}, 2500);
     expect(unknown).toMatchObject({ ok: false, error: { name: "method_not_found" } });
     const refused = await m.call(instance.id, "editor/command", { typed: "sh ls" }, 2500);
-    expect(refused).toMatchObject({ ok: false, error: { name: "unsupported", data: { reason: "sh runs a shell" } } });
+    expect(refused).toMatchObject({ ok: false, error: { name: "unsupported", data: { reason: "runs a shell command" } } });
     bridge.control({ cmd: "slow", method: "editor/state", ms: 1500 });
     const slow = await m.call(instance.id, "editor/state", {}, 300);
     expect(slow).toMatchObject({ ok: false, error: { name: "timeout" } });

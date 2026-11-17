@@ -16,7 +16,7 @@ import {
   stateText,
   symbolsText,
 } from "./format";
-import type { HelixService } from "./service";
+import { commandText, type HelixService } from "./service";
 
 const instanceOption = { type: "string" as const, description: "Helix instance: its key (host:pid), id or pid. Default: the one bound to this thread, or the only one", aliases: ["i", "pid"] };
 
@@ -49,16 +49,24 @@ export function queryText(kind: QueryKind, result: Record<string, unknown>, root
   if (kind === "hover") return String(result.markdown ?? "") || "No hover information.";
   if (kind === "documentSymbols" || kind === "workspaceSymbols") return symbolsText((result.symbols ?? []) as SymbolInfo[], Number(result.total ?? 0), roots);
   if (kind === "incomingCalls" || kind === "outgoingCalls") {
-    const calls = (result.calls ?? []) as { name: string; kind: string; location: Location }[];
+    const calls = (result.calls ?? []) as { name: string; kind: string; location: Location; callSites?: Location[] }[];
     if (calls.length === 0) return "No calls.";
-    const shown = calls.slice(0, 50).map((c) => `${c.name}  ${displayPath(c.location.path, roots)}:${c.location.range.start.line}  ${c.location.preview.trim()}`);
+    const shown = calls.slice(0, 50).map((c) => {
+      const sites = c.callSites ?? [];
+      const at = sites.length > 0 ? `, called at ${sites.slice(0, 5).map((s) => `${displayPath(s.path, roots)}:${s.range.start.line}`).join(", ")}${sites.length > 5 ? ` and ${sites.length - 5} more` : ""}` : "";
+      return `${c.name}  ${displayPath(c.location.path, roots)}:${c.location.range.start.line}${at}  ${c.location.preview.trim()}`;
+    });
     return [...shown, ...more(Number(result.total ?? calls.length), shown.length)].join("\n");
   }
   if (kind === "renamePreview") {
     const edits = (result.edits ?? []) as { path: string; range: { start: { line: number; col: number } }; newText: string }[];
     if (edits.length === 0) return "Nothing to rename.";
     const shown = edits.slice(0, 50).map((e) => `${displayPath(e.path, roots)}:${e.range.start.line}:${e.range.start.col} -> ${e.newText}`);
-    return [`${edits.length} edit${edits.length === 1 ? "" : "s"} in ${Number(result.files ?? 0)} file${Number(result.files) === 1 ? "" : "s"} (not applied)`, ...shown, ...more(edits.length, shown.length)].join("\n");
+    // `files` is the sorted list of paths touched (a count in early mocks).
+    const files = Array.isArray(result.files) ? result.files.length : Number(result.files ?? 0);
+    const total = Number(result.total ?? edits.length);
+    const operations = ((result.fileOperations ?? []) as { kind: string; path: string; newPath?: string }[]).map((op) => `${op.kind} ${displayPath(op.path, roots)}${op.newPath ? ` -> ${displayPath(op.newPath, roots)}` : ""}`);
+    return [`${total} edit${total === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} (not applied)`, ...operations, ...shown, ...more(total, shown.length)].join("\n");
   }
   return locationsText((result.locations ?? []) as Location[], Number(result.total ?? 0), roots);
 }
@@ -106,7 +114,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
             instance: instanceOption,
             split: { type: "enum", values: ["none", "horizontal", "vertical"], description: "Open in a new split" },
             note: { type: "string", description: "One line shown on Helix's status line" },
-            now: { type: "boolean", description: "Move even if the user is typing (default: wait for them, Helix shows :bb-go)" },
+            now: { type: "boolean", description: "Move even if the user is busy (default: wait for them, Helix shows :bb-go)" },
           },
           async run({ positionals, options }, ctx) {
             return guard(async () => {
@@ -120,7 +128,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
               });
               const where = `${displayPath(result.path, rootsOf(instance))}${location.line ? `:${location.line}` : ""}`;
               const stale = result.stale ? "\nThe buffer may be stale: files changed on disk during an agent's turn and reload is not available in this Helix yet (:reload)." : "";
-              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is typing. Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane ? ` in pane ${result.pane}` : ""}.${stale}` };
+              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed). Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane ? ` in pane ${result.pane}` : ""}.${stale}` };
             });
           },
         }),
@@ -215,7 +223,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
             return guard(async () => {
               const instance = await target(options.instance, ctx.threadId);
               if (options.focus !== undefined) await service.focusPane(instance, options.focus, "always");
-              if (options.close !== undefined) await service.closePane(instance, options.close);
+              if (options.close !== undefined && (await service.closePane(instance, options.close)).deferred) return { exitCode: 0, stdout: "Deferred: the user is busy; Helix shows :bb-go." };
               const { views, layout } = await service.panes(instance);
               return { exitCode: 0, stdout: panesText(views, layout, rootsOf(instance)) };
             });
@@ -243,7 +251,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
                 ...(options.keys ? { keys: options.keys } : {}),
                 interrupt: "always",
               });
-              return { exitCode: 0, stdout: result.deferred ? "Deferred: the user is typing; Helix shows :bb-go." : result.status ? `${result.status.severity}: ${result.status.message}` : "Done." };
+              return { exitCode: result.status?.severity === "error" ? 1 : 0, stdout: commandText(result) };
             });
           },
         }),

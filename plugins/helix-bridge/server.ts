@@ -279,9 +279,11 @@ export default async function plugin(bb: BbPluginApi) {
         const { hxbPath } = await settings.get();
         // bb's terminals do not export BB_THREAD_ID and friends, which Helix
         // records in its registry file to say which thread it belongs to; set
-        // them for the session we start.
+        // them for the session we start. bb's terminal answers the
+        // device-attributes query itself, so Helix cannot detect that the
+        // surface speaks the Kitty keyboard protocol: tell it.
         const thread = await bb.sdk.threads.get({ threadId });
-        const vars = [`BB_THREAD_ID=${threadId}`, ...(thread.environmentId ? [`BB_ENVIRONMENT_ID=${thread.environmentId}`] : []), ...(thread.projectId ? [`BB_PROJECT_ID=${thread.projectId}`] : [])];
+        const vars = [`BB_THREAD_ID=${threadId}`, ...(thread.environmentId ? [`BB_ENVIRONMENT_ID=${thread.environmentId}`] : []), ...(thread.projectId ? [`BB_PROJECT_ID=${thread.projectId}`] : []), "HELIX_KITTY_KEYBOARD=enabled"];
         const command = `${vars.map(shellQuote).join(" ")} exec ${shellQuote(hxbPath.trim() || "hxb")}`;
         const created = await bb.sdk.terminals.create({ scope: { kind: "thread", threadId }, title: TERMINAL_TITLE, cols: 160, rows: 48, start: { mode: "command", command } });
         return { terminalId: created.id, created: true };

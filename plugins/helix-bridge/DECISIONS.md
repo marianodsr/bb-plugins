@@ -126,8 +126,11 @@ conservatively. Newest last.
     attributes query itself, at once, so Helix's automatic detection always
     stops before the surface can report Kitty support. With
     `kitty-keyboard-protocol = "enabled"` in Helix's config it works fully
-    (Escape `CSI 27u`, Ctrl+i `CSI 105;5u`, Option chords as Kitty). The
-    plugin never edits the config; `bb hx doctor` says how.
+    (Escape `CSI 27u`, Ctrl+i `CSI 105;5u`, Option chords as Kitty). Since
+    the integration step the plugin sets `HELIX_KITTY_KEYBOARD=enabled` on
+    the sessions it starts (the surface always speaks the protocol), so no
+    config edit is needed; Helix started in another terminal keeps its own
+    setting.
 27. **Tools follow capabilities**: `agents.configure` offers only the tools
     whose capability a connected Helix serving the thread reports.
 28. **Pane numbers**: Helix's view ids (often above 2^32) stay internal;
@@ -169,3 +172,19 @@ conservatively. Newest last.
     nothing visible on the key path (`spike/RESULTS.md`), so position
     updates stay as they are (coalesced 150 ms in the host, 120 ms to the
     app).
+
+## Integration step
+
+35. **Contract details from PROTOCOL_NOTES.md** the plugin relies on: a
+    deferred result means busy in any of the fork's senses (insert mode, a
+    key in the last 1.5 s, a prompt or picker open, a sequence half typed),
+    and the tools say so; `helix_command` reports the `overlay` and
+    `pendingKeys` a command leaves, because they make the next jump wait;
+    closing the focused pane can be deferred; a refusal's message already
+    names the reason, so `data.reason` is added only when it does not;
+    `renamePreview` `files` is the list of paths; symbols show their whole
+    `extent` when the server gives one; calls list their call sites.
+36. **Reload on focus** is the fork's: wterm sends `ESC [I`/`ESC [O` when
+    the textarea gains or loses focus (window switches included) once Helix
+    turns focus reporting on, and Helix reloads clean buffers changed on
+    disk. The plugin adds nothing.

@@ -6,7 +6,7 @@ import { QUERY_KINDS } from "../shared/protocol";
 import { BridgeFailure, type BoundInstance } from "./bridge";
 import { queryText } from "./cli";
 import { diagnosticsText, displayPath, panesText, rootsOf, selectionText } from "./format";
-import type { HelixService } from "./service";
+import { commandText, type HelixService } from "./service";
 
 export const TOOL_NAMES = [
   "helix_selection",
@@ -32,7 +32,7 @@ export const INSTRUCTIONS = [
   "- helix_selection tells you what the user is looking at or has selected, with the text. helix_diagnostics and helix_query read the language server Helix already runs; prefer them over starting your own.",
   "- helix_edit is for a change the user should watch happen in their editor; use your normal file tools for bulk edits.",
   "- helix_command is for anything else, under Helix's command policy. Never use it for something a structured tool does, and never retry or work around a refusal.",
-  "- A result that says \"deferred\" is not a failure: the user is typing, and Helix shows a prompt (:bb-go) to make the jump.",
+  "- A result that says \"deferred\" is not a failure: the user is busy (typing, a prompt open or a key sequence half typed), and Helix shows \"bb wants to ... (:bb-go)\" to do it when they are ready.",
 ].join("\n");
 
 export function registerTools(bb: BbPluginApi, service: HelixService): void {
@@ -44,7 +44,8 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
       return text(await work(instance));
     } catch (error) {
       if (error instanceof BridgeFailure) {
-        const reason = error.name === "unsupported" && error.data && typeof (error.data as { reason?: unknown }).reason === "string" ? `${error.message} (${(error.data as { reason: string }).reason})` : error.message;
+        const given = error.name === "unsupported" && error.data && typeof (error.data as { reason?: unknown }).reason === "string" ? (error.data as { reason: string }).reason : null;
+        const reason = given && !error.message.includes(given) ? `${error.message} (${given})` : error.message;
         return text(`${error.name}: ${reason}`, true);
       }
       return text(error instanceof Error ? error.message : String(error), true);
@@ -74,7 +75,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         split: z.enum(["none", "horizontal", "vertical"]).optional().describe("Open in a new split"),
         pane: z.number().int().min(1).optional().describe("Open in this pane (see helix_panes)"),
         note: z.string().max(200).optional().describe("One line shown on the status line, e.g. why this place matters"),
-        now: z.boolean().optional().describe("Move even if the user is typing (default: wait; Helix offers :bb-go)"),
+        now: z.boolean().optional().describe("Move even if the user is busy (default: wait; Helix offers :bb-go)"),
       })
       .strict(),
     execute: (args, { threadId }) =>
@@ -93,7 +94,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         });
         const where = `${displayPath(result.path, rootsOf(instance))}${args.line ? `:${args.line}${args.endLine ? `-${args.endLine}` : ""}` : ""}`;
         return result.deferred
-          ? `Deferred: the user is typing. Helix shows "bb wants to show ${where} (:bb-go)"; tell them to run :bb-go when ready.`
+          ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed). Helix shows "bb wants to show ${where} (:bb-go)"; tell them to run :bb-go when ready.`
           : `The user is now at ${where}${result.pane ? ` (pane ${result.pane})` : ""}.${result.stale ? " The buffer may be stale: files changed on disk during this turn and reload is not available in this Helix yet; tell the user to run :reload if it looks out of date." : ""}`;
       })(threadId),
   });
@@ -109,7 +110,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           .array(z.object({ path: pathSchema, line, endLine: line.optional(), note: z.string().min(1).max(200).describe("Why this stop matters, one line") }).strict())
           .min(1)
           .max(100),
-        now: z.boolean().optional().describe("Jump even if the user is typing"),
+        now: z.boolean().optional().describe("Jump even if the user is busy"),
       })
       .strict(),
     execute: (args, { threadId }) =>
@@ -121,7 +122,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           interrupt: args.now ? "always" : "whenIdle",
         });
         const first = args.stops[0]!;
-        return `Tour "${args.title}" with ${result.count} stop${result.count === 1 ? "" : "s"}. ${result.deferred ? `Deferred: the user is typing; Helix offers :bb-go to start at ${first.path}:${first.line}.` : `The user is at stop 1, ${first.path}:${first.line}.`} They continue with :bb-next.`;
+        return `Tour "${args.title}" with ${result.count} stop${result.count === 1 ? "" : "s"}. ${result.deferred ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed); Helix offers :bb-go to start at ${first.path}:${first.line}.` : `The user is at stop 1, ${first.path}:${first.line}.`} They continue with :bb-next.`;
       })(threadId),
   });
 
@@ -136,8 +137,11 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           if (pane === undefined) throw new BridgeFailure("invalid_params", `pass pane to ${action}`);
           if (action === "focus") {
             const r = await service.focusPane(instance, pane);
-            if (r.deferred) return "Deferred: the user is typing; Helix offers :bb-go.";
-          } else await service.closePane(instance, pane);
+            if (r.deferred) return "Deferred: the user is busy (typing, a prompt open or a key sequence half typed); Helix offers :bb-go.";
+          } else {
+            const r = await service.closePane(instance, pane);
+            if (r.deferred) return "Deferred: the user is busy (typing, a prompt open or a key sequence half typed); Helix offers :bb-go to close it.";
+          }
         }
         const { views, layout } = await service.panes(instance);
         return panesText(views, layout, rootsOf(instance));
@@ -234,7 +238,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         static: z.string().min(1).max(100).optional(),
         count: z.number().int().min(1).max(10000).optional(),
         keys: z.string().min(1).max(500).optional(),
-        now: z.boolean().optional().describe("Run even if the user is typing"),
+        now: z.boolean().optional().describe("Run even if the user is busy"),
       })
       .strict(),
     execute: (args, { threadId }) =>
@@ -246,8 +250,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           ...(args.keys !== undefined ? { keys: args.keys } : {}),
           interrupt: args.now ? "always" : "whenIdle",
         });
-        if (result.deferred) return "Deferred: the user is typing; Helix offers :bb-go to run it.";
-        return result.status ? `Done. Status line: ${result.status.message}` : "Done.";
+        return commandText(result);
       })(threadId),
   });
 }

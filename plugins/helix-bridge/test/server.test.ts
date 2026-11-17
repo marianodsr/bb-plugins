@@ -200,7 +200,7 @@ describe("agent tools", () => {
   it("reports a deferred jump while the user types", async () => {
     mock.control({ cmd: "busy" });
     const result = await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 3 }, ctx);
-    expect(textOf(result)).toMatch(/^Deferred: the user is typing.*:bb-go/u);
+    expect(textOf(result)).toMatch(/^Deferred: the user is busy.*:bb-go/u);
     expect(mock.control({ cmd: "state" }).pendingJump).toBe(true);
   });
 
@@ -237,8 +237,35 @@ describe("agent tools", () => {
   it("returns the command policy's refusal as the reason", async () => {
     const result = await fake.harness.behavior.callAgentTool("helix_command", { typed: "sh ls" }, ctx);
     expect(result).toMatchObject({ isError: true });
-    expect(textOf(result)).toBe("unsupported: refused: sh runs a shell (sh runs a shell)");
+    expect(textOf(result)).toBe("unsupported: `sh` is refused by the command policy: it runs a shell command");
     expect(textOf(await fake.harness.behavior.callAgentTool("helix_command", { static: "goto_definition" }, ctx))).toMatch(/Status line: ran goto_definition/u);
+  });
+
+  it("refuses the :bb-* commands that speak in the user's name, and says what a command left open", async () => {
+    const send = await fake.harness.behavior.callAgentTool("helix_command", { typed: "bb-send look" }, ctx);
+    expect(textOf(send)).toBe("unsupported: `bb-send` is refused by the command policy: it sends a message to bb in the user's name");
+    const left = await fake.harness.behavior.callAgentTool("helix_command", { keys: "<space>" }, ctx);
+    expect(textOf(left)).toMatch(/left with the key sequence <space> half typed; the next request that moves the user waits/u);
+    // A half-typed sequence makes the user busy, so the next jump waits.
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 3 }, ctx))).toMatch(/^Deferred/u);
+    await fake.harness.behavior.callAgentTool("helix_command", { keys: "<esc>" }, ctx);
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_command", { static: "replace" }, ctx))).toMatch(/waits for the next key/u);
+  });
+
+  it("defers closing the focused pane while the user is busy, but not another pane", async () => {
+    await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 3, split: "vertical", now: true }, ctx);
+    const listed = textOf(await fake.harness.behavior.callAgentTool("helix_panes", {}, ctx));
+    const focused = Number(/^\* pane (\d+)/mu.exec(listed)?.[1]);
+    const other = Number(/^ {2}pane (\d+)/mu.exec(listed)?.[1]);
+    mock.control({ cmd: "busy", what: "prompt" });
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_panes", { action: "close", pane: focused }, ctx))).toMatch(/^Deferred.*:bb-go to close it/u);
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_panes", { action: "close", pane: other }, ctx))).toMatch(new RegExp(`^\\* pane ${focused}  util.go`, "u"));
+    mock.control({ cmd: "busy", what: "idle" });
+  });
+
+  it("counts the files a rename preview touches", async () => {
+    const result = await fake.harness.behavior.callAgentTool("helix_query", { kind: "renamePreview", path: "main.go", line: 10, col: 6, newName: "MakeGreeter" }, ctx);
+    expect(textOf(result)).toMatch(/^3 edits in 2 files \(not applied\)/u);
   });
 
   it("says when no editor serves the thread", async () => {
@@ -306,7 +333,7 @@ describe("editor terminal", () => {
     expect(again).toEqual({ terminalId: "term_1", created: false });
     expect(created[0]).toMatchObject({ scope: { kind: "thread", threadId: "thr_term" }, title: "Helix", start: { mode: "command" } });
     // bb's terminals do not set BB_THREAD_ID; the session carries it so Helix records it.
-    expect((created[0] as { start: { command: string } }).start.command).toMatch(/^BB_THREAD_ID=thr_term BB_ENVIRONMENT_ID=env_test BB_PROJECT_ID=\S+ exec hxb$/u);
+    expect((created[0] as { start: { command: string } }).start.command).toMatch(/^BB_THREAD_ID=thr_term BB_ENVIRONMENT_ID=env_test BB_PROJECT_ID=\S+ HELIX_KITTY_KEYBOARD=enabled exec hxb$/u);
   });
 });
 

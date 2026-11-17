@@ -146,6 +146,8 @@ export interface SymbolInfo {
   kind: string;
   location: Location;
   container?: string;
+  /** The whole symbol, for nested answers (gopls, rust-analyzer). */
+  extent?: Range;
 }
 
 export const QUERY_KINDS = [

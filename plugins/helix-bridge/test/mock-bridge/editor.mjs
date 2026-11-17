@@ -32,9 +32,31 @@ const languageOf = (path) => (path ? LANGUAGES[extname(path)] ?? "text" : "text"
 const lines = (text) => text.split("\n");
 const SKIP = new Set(["node_modules", ".git", "dist", "target"]);
 
-/** Shell-running and work-discarding commands the "safe" policy refuses. */
+/**
+ * What the "safe" policy refuses, after bb-bridge/COMMAND_POLICY.md (a
+ * sample of each family, with Helix's aliases), and why.
+ */
 const SHELL = new Set(["sh", "run-shell-command", "pipe", "pipe-to", "insert-output", "append-output", "shell_pipe", "shell_pipe_to", "shell_insert_output", "shell_append_output", "shell_keep_pipe"]);
 const DISCARD = new Set(["quit!", "q!", "quit-all!", "qa!", "buffer-close!", "bc!", "buffer-close-all!", "bca!", "buffer-close-others!", "bco!", "cquit!", "cq!"]);
+const OVERWRITE = new Set(["write!", "w!", "write-quit!", "wq!", "x!", "write-all!", "wa!", "write-quit-all!", "wqa!", "xa!", "write-buffer-close!", "wbc!"]);
+const CONFIG = new Set(["config-reload", "workspace-trust", "workspace-untrust", "workspace-exclude", "lsp-workspace-command", "debug-start", "dbg", "debug-remote", "dbg-tcp", "debug-eval", "suspend"]);
+const IN_USERS_NAME = new Set(["bb-send", "bb-send!", "bb-ask", "bb-comment", "bb-comments-send"]);
+const GUARDED_OPTIONS = new Set(["shell", "clipboard-provider", "terminal", "workspace-trust", "bridge"]);
+const STATIC_REFUSED = new Map([["command_palette", "opens the command palette"], ["suspend", "suspends Helix"]]);
+/** Static commands that wait for the next key: `keys` only. */
+const NEXT_KEY = new Set(["find_next_char", "find_till_char", "find_prev_char", "till_prev_char", "replace", "select_register", "insert_register", "surround_add", "surround_replace", "surround_delete", "select_textobject_around", "select_textobject_inner"]);
+
+function refusalOf(name, args, line, doc) {
+  if (SHELL.has(name) || name.startsWith("!") || name === "|") return "runs a shell command";
+  if (/%sh\{/u.test(line)) return "contains a %sh{…} expansion, which runs a shell command";
+  if (DISCARD.has(name)) return "discards unsaved changes";
+  if (OVERWRITE.has(name)) return "overwrites a file that changed on disk since Helix read it";
+  if ((name === "reload!" || name === "rl!" || name === "reload" || name === "rl") && doc.modified) return "discards unsaved changes";
+  if (CONFIG.has(name)) return "reloads configuration from files an agent can write, which can name programs to run";
+  if (IN_USERS_NAME.has(name)) return "sends a message to bb in the user's name";
+  if ((name === "set" || name === "set-option" || name === "toggle" || name === "toggle-option") && GUARDED_OPTIONS.has((args[0] ?? "").split(".")[0])) return `sets ${args[0]}, which can run programs`;
+  return null;
+}
 
 export class Editor {
   constructor({ workspaceRoot, cwd, open = [] }) {
@@ -51,6 +73,9 @@ export class Editor {
     this.activeList = null;
     this.pendingJump = null;
     this.busyUntil = 0;
+    /** What the pretend user left open: "prompt", "picker" or null; a half-typed key sequence. */
+    this.overlay = null;
+    this.pendingKeys = null;
     this.diagnostics = new Map(); // path -> [{ range, severity, message, source }]
     this.annotations = new Map(); // namespace\0path -> items
     this.reveals = []; // { paths, follow, at } from editor/reload and editor/reveal
@@ -141,8 +166,9 @@ export class Editor {
     this.busyUntil = Date.now() + 1500;
   }
 
+  /** Busy: insert mode, a key in the last 1500 ms, a half-typed sequence, or a prompt or picker open. */
   isBusy() {
-    return this.mode === "insert" || Date.now() < this.busyUntil;
+    return this.mode === "insert" || Date.now() < this.busyUntil || this.pendingKeys !== null || this.overlay === "prompt" || this.overlay === "picker";
   }
 
   userSelect({ path, line, col = 1, endLine, endCol }) {
@@ -228,10 +254,10 @@ export class Editor {
   }
 
   /** Runs `move` now or stores it as the pending jump, per `interrupt`. */
-  maybeDefer(interrupt, label, move) {
+  maybeDefer(interrupt, label, move, verbatim = false) {
     if ((interrupt ?? "whenIdle") === "whenIdle" && this.isBusy()) {
       this.pendingJump = move;
-      this.status = { message: `bb wants to show ${label} (:bb-go)`, severity: "info" };
+      this.status = { message: `bb wants to ${verbatim || label.startsWith("close ") ? label : `show ${label}`} (:bb-go)`, severity: "info" };
       return { deferred: true };
     }
     return { deferred: false, ...move() };
@@ -341,7 +367,8 @@ export class Editor {
 
   setLocations({ list, title, items, activate = true, goto, interrupt }) {
     if (typeof list !== "string" || !Array.isArray(items)) throw new BridgeError(ERR.invalidParams, "list and items are required", { field: typeof list !== "string" ? "list" : "items" });
-    if (items.length > 2000) throw new BridgeError(ERR.tooLarge, "at most 2000 items");
+    if (items.length > 2000) throw new BridgeError(ERR.invalidParams, "at most 2000 items", { field: "items" });
+    if (goto !== undefined && (!Number.isInteger(goto) || goto < 0 || goto >= items.length)) throw new BridgeError(ERR.invalidParams, "goto is past the end of items", { field: "goto" });
     const normalized = items.map((item) => ({ ...item, path: this.abs(item.path) }));
     this.lists.set(list, { title: title ?? list, items: normalized, index: -1 });
     if (activate) this.activeList = list;
@@ -351,7 +378,7 @@ export class Editor {
       deferred = this.open({ path: item.path, line: item.line, col: item.col, endLine: item.endLine, interrupt, note: item.note }).deferred;
       this.lists.get(list).index = goto;
     }
-    return { count: normalized.length, ...(goto !== undefined ? { deferred } : {}) };
+    return { count: normalized.length, deferred };
   }
 
   clearLocations({ list } = {}) {
@@ -377,24 +404,31 @@ export class Editor {
     return { deferred: r.deferred };
   }
 
-  viewClose({ viewId }) {
+  /** Closing the focused pane moves the user's focus, so it honours `interrupt`; any other pane closes at once. */
+  viewClose({ viewId, interrupt }) {
     if (!this.views.has(viewId)) throw new BridgeError(ERR.notFound, `no view ${viewId}`);
     if (this.views.size === 1) throw new BridgeError(ERR.unsupported, "cannot close the last pane", { reason: "last pane" });
-    this.views.delete(viewId);
-    const prune = (node) => {
-      if (node.viewId !== undefined) return node.viewId === viewId ? null : node;
-      const children = node.children.map(prune).filter(Boolean);
-      return children.length === 1 ? children[0] : { ...node, children };
+    const close = () => {
+      this.views.delete(viewId);
+      const prune = (node) => {
+        if (node.viewId !== undefined) return node.viewId === viewId ? null : node;
+        const children = node.children.map(prune).filter(Boolean);
+        return children.length === 1 ? children[0] : { ...node, children };
+      };
+      this.layout = prune(this.layout);
+      if (this.focusedView === viewId) this.setFocus(this.views.keys().next().value);
+      return {};
     };
-    this.layout = prune(this.layout);
-    if (this.focusedView === viewId) this.setFocus(this.views.keys().next().value);
-    return {};
+    if (viewId !== this.focusedView) return { deferred: false, ...close() };
+    const path = this.docs.get(this.views.get(viewId).docId).path;
+    return { deferred: this.maybeDefer(interrupt, `close the pane showing ${path ? relative(this.cwd, path) : "[scratch]"}`, close).deferred };
   }
 
   select({ viewId, ranges, primary = 0, interrupt }) {
     const view = viewId !== undefined ? this.views.get(viewId) : this.focused();
     if (!view) throw new BridgeError(ERR.notFound, `no view ${viewId}`);
     if (!Array.isArray(ranges) || ranges.length === 0) throw new BridgeError(ERR.invalidParams, "ranges is required", { field: "ranges" });
+    if (!Number.isInteger(primary) || primary < 0 || primary >= ranges.length) throw new BridgeError(ERR.invalidParams, "primary must index into ranges", { field: "primary" });
     const r = this.maybeDefer(interrupt, `line ${ranges[0].start.line}`, () => {
       view.selections = ranges;
       view.primary = primary;
@@ -409,36 +443,51 @@ export class Editor {
     const given = ["typed", "static", "keys"].filter((k) => params[k] !== undefined);
     if (given.length !== 1) throw new BridgeError(ERR.invalidParams, "exactly one of typed, static, keys", { field: "typed" });
     if (policy === "none") throw new BridgeError(ERR.unsupported, "editor/command is disabled", { reason: "the command policy is none" });
-    const refuse = (reason) => {
-      throw new BridgeError(ERR.unsupported, `refused: ${reason}`, { reason });
+    // Worded as the fork words it: "`sh` is refused by the command policy: it runs a shell command".
+    const refuse = (reason, data = {}) => {
+      throw new BridgeError(ERR.unsupported, `\`${data.command ?? "this"}\` is refused by the command policy: it ${reason}`, { reason, ...data });
     };
     if (params.typed !== undefined) {
-      const line = String(params.typed).trim();
+      const line = String(params.typed).trim().replace(/^:/u, "");
+      if (line === "") throw new BridgeError(ERR.invalidParams, "empty command line", { field: "typed" });
       const [name, ...args] = line.split(/\s+/u);
-      if (policy === "safe") {
-        if (SHELL.has(name) || name.startsWith("!") || name === "|") refuse(`${name} runs a shell`);
-        if (/%sh\{|%\{sh/u.test(line)) refuse("shell expansion");
-        if (DISCARD.has(name)) refuse(`${name} discards unsaved work`);
-        if ((name === "reload!" || name === "rl!") && this.focusedDoc().modified) refuse("reload! would discard unsaved work");
-      }
-      return this.maybeDeferCommand(params.interrupt, `:${line}`, () => this.typed(name, args));
+      const reason = policy === "safe" ? refusalOf(name, args, line, this.focusedDoc()) : null;
+      if (reason) refuse(reason, { command: name });
+      return this.maybeDeferCommand(params.interrupt, `run :${line}`, () => this.typed(name, args));
     }
     if (params.static !== undefined) {
-      if (policy === "safe" && SHELL.has(params.static)) refuse(`${params.static} runs a shell`);
-      return this.maybeDeferCommand(params.interrupt, params.static, () => ({ status: { message: `ran ${params.static}${params.count ? ` x${params.count}` : ""}`, severity: "info" } }));
+      const name = params.static;
+      if (params.count !== undefined && (!Number.isInteger(params.count) || params.count < 1)) throw new BridgeError(ERR.invalidParams, "count must be at least 1", { field: "count" });
+      if (NEXT_KEY.has(name)) throw new BridgeError(ERR.unsupported, `${name} waits for the next key; send it with keys`, { reason: "waits for the next key", command: name });
+      if (policy === "safe" && SHELL.has(name)) refuse("runs a shell command", { command: name });
+      if (policy === "safe" && STATIC_REFUSED.has(name)) refuse(STATIC_REFUSED.get(name), { command: name });
+      return this.maybeDeferCommand(params.interrupt, `run ${name}`, () => ({ status: { message: `ran ${name}${params.count ? ` x${params.count}` : ""}`, severity: "info" } }));
     }
     const keys = String(params.keys);
-    if (policy === "safe" && /^:\s*(sh|run-shell-command|pipe|!)/u.test(keys)) refuse("the keys open a shell command");
-    if (policy === "safe" && /^[|!]/u.test(keys)) refuse("the keys run a shell");
-    return this.maybeDeferCommand(params.interrupt, keys, () => {
-      this.touch();
+    if (policy === "safe") {
+      const typed = /^:([^<]*)<ret>/u.exec(keys);
+      if (typed) {
+        const [name, ...args] = typed[1].trim().split(/\s+/u);
+        const reason = refusalOf(name, args, typed[1], this.focusedDoc());
+        if (reason) refuse(reason, { command: name, key: "<ret>", sent: typed[0].length - "<ret>".length });
+      }
+      if (/^[|!]/u.test(keys)) refuse("runs a shell command", { command: keys[0] === "|" ? "shell_pipe" : "shell_insert_output", key: keys[0], sent: 0 });
+    }
+    return this.maybeDeferCommand(params.interrupt, `press ${keys}`, () => {
+      // Keys the bridge feeds do not make the user busy, but they can leave
+      // a prompt open or a sequence half typed.
+      this.pendingKeys = /(<space>|^g|^z)$/u.test(keys) ? (keys.endsWith("<space>") ? "<space>" : keys.slice(-1)) : null;
+      this.overlay = /^:[^<]*$/u.test(keys) ? "prompt" : /<space>f$/u.test(keys) ? "picker" : null;
+      if (/<ret>$|<esc>$/u.test(keys)) this.overlay = null;
       return { status: { message: `keys ${keys}`, severity: "info" } };
     });
   }
 
   maybeDeferCommand(interrupt, label, run) {
-    const r = this.maybeDefer(interrupt, label, run);
-    return r.deferred ? { deferred: true } : { deferred: false, ...(r.status ? { status: r.status } : {}) };
+    // The deferred notice is "bb wants to <what> (:bb-go)".
+    const r = this.maybeDefer(interrupt, label, run, true);
+    if (r.deferred) return { deferred: true };
+    return { deferred: false, mode: this.mode, ...(r.status ? { status: r.status } : {}), ...(this.overlay ? { overlay: this.overlay } : {}), ...(this.pendingKeys ? { pendingKeys: this.pendingKeys } : {}) };
   }
 
   typed(name, args) {
@@ -464,7 +513,7 @@ export class Editor {
   go() {
     const jump = this.pendingJump;
     this.pendingJump = null;
-    if (!jump) return { status: { message: "no pending jump", severity: "warning" } };
+    if (!jump) return { status: { message: "Nothing from bb is waiting", severity: "error" } };
     jump();
     return {};
   }
@@ -472,14 +521,16 @@ export class Editor {
   annotate({ namespace, path, items }) {
     if (typeof namespace !== "string" || !namespace) throw new BridgeError(ERR.invalidParams, "namespace is required", { field: "namespace" });
     if (!Array.isArray(items)) throw new BridgeError(ERR.invalidParams, "items is required", { field: "items" });
-    if (items.length > 500) throw new BridgeError(ERR.tooLarge, "at most 500 items per file");
+    if (items.length > 500) throw new BridgeError(ERR.invalidParams, "at most 500 items per file", { field: "items" });
     for (const item of items) {
       if (!Number.isInteger(item.line) || item.line < 1) throw new BridgeError(ERR.invalidParams, "line must be a positive integer", { field: "items" });
-      if (typeof item.text !== "string" || item.text.length > 2000) throw new BridgeError(ERR.invalidParams, "text must be at most 2000 characters", { field: "items" });
+      if (typeof item.text !== "string" || item.text.length > 2000) throw new BridgeError(ERR.invalidParams, "text must be at most 2000 characters", { field: "text" });
       if (item.kind !== undefined && !["comment", "reply", "note"].includes(item.kind)) throw new BridgeError(ERR.invalidParams, "kind must be comment, reply or note", { field: "items" });
-      if (item.sign !== undefined && [...item.sign].length !== 1) throw new BridgeError(ERR.invalidParams, "sign must be one grapheme", { field: "items" });
+      if (item.sign !== undefined && [...new Intl.Segmenter().segment(item.sign)].length !== 1) throw new BridgeError(ERR.invalidParams, "sign must be one grapheme", { field: "sign" });
     }
-    const key = `${namespace}\0${this.abs(path)}`;
+    const abs = this.abs(path);
+    if (!this.docByPath(abs) && !existsSync(abs)) throw new BridgeError(ERR.notFound, `${abs} is neither open nor on disk`, { path: abs });
+    const key = `${namespace}\0${abs}`;
     if (items.length === 0) this.annotations.delete(key);
     else this.annotations.set(key, items);
     return { count: items.length };
@@ -497,9 +548,12 @@ export class Editor {
     if (!Array.isArray(ranges)) throw new BridgeError(ERR.invalidParams, "ranges is required", { field: "ranges" });
     if (durationMs < 50 || durationMs > 3000) throw new BridgeError(ERR.invalidParams, "durationMs must be 50 to 3000", { field: "durationMs" });
     const abs = this.abs(path);
+    if (interrupt !== undefined && interrupt !== "whenIdle" && interrupt !== "always") throw new BridgeError(ERR.invalidParams, "interrupt must be \"whenIdle\" or \"always\"", { field: "interrupt" });
+    if (!this.docByPath(abs) && !existsSync(abs)) throw new BridgeError(ERR.notFound, `${abs} is neither open nor on disk`, { path: abs });
     this.reveals.push({ paths: [abs], ranges, removed, follow, at: Date.now() });
-    if (follow && ranges[0]) this.open({ path: abs, line: ranges[0].start.line, interrupt });
-    return { animated: ranges.length };
+    const deferred = follow && ranges[0] ? this.open({ path: abs, line: ranges[0].start.line, interrupt }).deferred : false;
+    // Without follow a file that is not open has nothing on screen.
+    return { animated: follow || this.docByPath(abs) ? ranges.length : 0, deferred };
   }
 
   getDiagnostics({ path, minSeverity = "hint", limit = 100, offset = 0 } = {}) {
@@ -510,13 +564,13 @@ export class Editor {
     const counts = { errors: 0, warnings: 0, infos: 0, hints: 0 };
     for (const d of all) counts[{ error: "errors", warning: "warnings", info: "infos", hint: "hints" }[d.severity]] += 1;
     const kept = all.filter((d) => rank[d.severity] <= rank[minSeverity]).sort((a, b) => rank[a.severity] - rank[b.severity] || a.path.localeCompare(b.path) || a.range.start.line - b.range.start.line);
-    if (limit === 0) return { items: [], total: kept.length, truncated: false, counts };
+    if (limit === 0) return { counts, total: kept.length };
     const n = Math.min(500, Math.max(1, limit));
     return { items: kept.slice(offset, offset + n), total: kept.length, truncated: offset + n < kept.length, counts };
   }
 
   lspServers() {
-    return { servers: this.lspRunning ? [{ id: 1, name: "mock-lsp", languages: ["go", "typescript", "javascript"], root: this.workspaceRoot, initialized: true, features: ["definition", "references", "hover", "documentSymbols", "workspaceSymbols", "callHierarchy", "rename"] }] : [] };
+    return { servers: this.lspRunning ? [{ id: 1, name: "mock-lsp", languages: ["go", "typescript", "javascript"], root: this.workspaceRoot, initialized: true, features: ["definition", "references", "hover", "documentSymbols", "workspaceSymbols", "incomingCalls", "outgoingCalls", "renamePreview", "diagnostics", "completion"], positionEncoding: "utf-8" }] : [] };
   }
 
   // A toy language server: words, regex symbols and grep.
@@ -556,9 +610,15 @@ export class Editor {
   symbols(path) {
     const out = [];
     const re = /^\s*(?:export\s+)?(?:async\s+)?(func(?:\s+\([^)]*\))?|function|class|interface|type|const|struct|fn|def)\s+([A-Za-z_][A-Za-z0-9_]*)/u;
-    lines(this.textOf(path)).forEach((text, i) => {
+    const all = lines(this.textOf(path));
+    all.forEach((text, i) => {
       const m = re.exec(text);
       if (m) out.push({ name: m[2], kind: m[1].startsWith("func") || m[1] === "function" || m[1] === "fn" || m[1] === "def" ? "function" : m[1], location: this.location(path, i + 1, text.indexOf(m[2]) + 1, m[2].length) });
+    });
+    // `extent`: the whole symbol, here up to the line before the next one.
+    out.forEach((s, i) => {
+      const last = i + 1 < out.length ? out[i + 1].location.range.start.line - 1 : all.length;
+      s.extent = { start: { line: s.location.range.start.line, col: 1 }, end: { line: last + 1, col: 1 } };
     });
     return out;
   }
@@ -573,7 +633,7 @@ export class Editor {
       if (!params.position) throw new BridgeError(ERR.invalidParams, "position is required", { field: "position" });
       const path = this.abs(params.path);
       if (!existsSync(path)) throw new BridgeError(ERR.notFound, `${path} does not exist`);
-      if (languageOf(path) === "text" || languageOf(path) === "markdown") throw new BridgeError(ERR.noLanguageServer, `no language server for ${languageOf(path)}`);
+      if (languageOf(path) === "text" || languageOf(path) === "markdown") throw new BridgeError(ERR.noLanguageServer, `no language server for ${languageOf(path)}`, { language: languageOf(path) === "text" ? null : languageOf(path), kind });
       const word = this.wordAt(path, params.position);
       return { path, word };
     };
@@ -619,13 +679,13 @@ export class Editor {
       case "outgoingCalls": {
         const { word } = needPos();
         const refs = word ? references(word).filter((l) => !/func|function/u.test(l.preview)) : [];
-        return page(refs.map((location) => ({ name: word, kind: "function", location })), "calls");
+        return page(refs.map((location) => ({ name: word, kind: "function", location, callSites: [location] })), "calls");
       }
       case "renamePreview": {
         const { word } = needPos();
         if (typeof params.newName !== "string") throw new BridgeError(ERR.invalidParams, "newName is required", { field: "newName" });
         const edits = word ? references(word).map((l) => ({ path: l.path, range: l.range, newText: params.newName })) : [];
-        return { edits: edits.slice(0, limit), files: new Set(edits.map((e) => e.path)).size, truncated: edits.length > limit };
+        return { edits: edits.slice(0, limit), files: [...new Set(edits.map((e) => e.path))].sort(), total: edits.length, truncated: edits.length > limit };
       }
       default:
         throw new BridgeError(ERR.invalidParams, `unknown kind ${kind}`, { field: "kind" });

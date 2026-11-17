@@ -45,6 +45,27 @@ export const TOOL_CAPABILITY = {
   helix_command: "command",
 } as const satisfies Record<string, Capability>;
 
+/** editor/command's result (PROTOCOL_NOTES.md, step 2c). */
+export interface CommandResult {
+  deferred?: boolean;
+  mode?: string;
+  status?: { message: string; severity: string };
+  /** What the command left on top of the editor: prompt, picker, popup, other. */
+  overlay?: string;
+  /** A half-typed key sequence it left, e.g. "<space>". */
+  pendingKeys?: string;
+}
+
+/** How a command result reads for a person or an agent. */
+export function commandText(result: CommandResult): string {
+  if (result.deferred) return "Deferred: the user is busy (typing, a prompt open or a key sequence half typed); Helix offers :bb-go to run it.";
+  const out = [result.status ? (result.status.severity === "error" ? `Helix reported an error: ${result.status.message}` : `Done. Status line: ${result.status.message}`) : "Done."];
+  const left = [result.overlay ? `a ${result.overlay} open` : null, result.pendingKeys ? `the key sequence ${result.pendingKeys} half typed` : null].filter(Boolean);
+  if (left.length > 0) out.push(`Helix is left with ${left.join(" and ")}; the next request that moves the user waits until it is closed (send <esc>, or finish in one request).`);
+  if (result.mode && result.mode !== "normal") out.push(`Mode: ${result.mode}.`);
+  return out.join(" ");
+}
+
 export class HelixService {
   /**
    * Pane numbers for people and agents. Helix's view ids are large (often
@@ -239,7 +260,7 @@ export class HelixService {
 
   // ----- the agent drives the editor ------------------------------------------
 
-  /** Take the user to a place. Deferred (the user is typing) is not a failure. */
+  /** Take the user to a place. Deferred (the user is busy) is not a failure. */
   async show(
     instance: BoundInstance,
     options: { path: string; line?: number; col?: number; endLine?: number; endCol?: number; split?: "none" | "horizontal" | "vertical"; pane?: number; note?: string; interrupt?: "whenIdle" | "always"; focus?: boolean },
@@ -274,9 +295,10 @@ export class HelixService {
     return this.call(instance, "view/focus", { viewId: await this.paneViewId(instance, pane), ...(interrupt ? { interrupt } : {}) });
   }
 
-  async closePane(instance: BoundInstance, pane: number): Promise<void> {
+  /** Closing the focused pane moves the user's focus, so it can be deferred. */
+  async closePane(instance: BoundInstance, pane: number, interrupt?: "whenIdle" | "always"): Promise<{ deferred?: boolean }> {
     this.requireCapability(instance, "views");
-    await this.call(instance, "view/close", { viewId: await this.paneViewId(instance, pane) });
+    return this.call(instance, "view/close", { viewId: await this.paneViewId(instance, pane), ...(interrupt ? { interrupt } : {}) });
   }
 
   async select(instance: BoundInstance, options: { pane?: number; ranges: Range[]; primary?: number; interrupt?: "whenIdle" | "always" }): Promise<{ version: number; deferred?: boolean }> {
@@ -300,7 +322,7 @@ export class HelixService {
     });
   }
 
-  async command(instance: BoundInstance, options: { typed?: string; static?: string; count?: number; keys?: string; interrupt?: "whenIdle" | "always" }): Promise<{ status?: { message: string; severity: string }; deferred?: boolean }> {
+  async command(instance: BoundInstance, options: { typed?: string; static?: string; count?: number; keys?: string; interrupt?: "whenIdle" | "always" }): Promise<CommandResult> {
     this.requireCapability(instance, "command");
     const given = [options.typed, options.static, options.keys].filter((v) => v !== undefined);
     if (given.length !== 1) throw new BridgeFailure("invalid_params", "pass exactly one of typed, static or keys");

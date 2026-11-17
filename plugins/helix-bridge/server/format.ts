@@ -125,7 +125,8 @@ export function locationsText(locations: Location[], total: number, roots: strin
 
 export function symbolsText(symbols: SymbolInfo[], total: number, roots: string[], max = MAX_ITEMS): string {
   if (symbols.length === 0) return "No symbols.";
-  const shown = symbols.slice(0, max).map((s) => `${s.kind} ${s.container ? `${s.container}.` : ""}${s.name}  ${displayPath(s.location.path, roots)}:${s.location.range.start.line}`);
+  // `extent` (nested answers): the whole symbol, so an agent can read its body.
+  const shown = symbols.slice(0, max).map((s) => `${s.kind} ${s.container ? `${s.container}.` : ""}${s.name}  ${displayPath(s.location.path, roots)}:${s.extent ? lineSpan(s.extent.start.line, rangeLines(s.extent).end) : s.location.range.start.line}`);
   return [...shown, ...more(Math.max(total, symbols.length), shown.length)].join("\n");
 }
 

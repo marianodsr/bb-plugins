@@ -23,7 +23,8 @@ When the user asks to be shown something ("take me to the entry point",
    They walk it with `:bb-next` and `:bb-prev`.
 4. End your answer with one line saying where they are now.
 
-A result that says **deferred** is not a failure: the user was typing, so
+A result that says **deferred** is not a failure: the user is busy (typing,
+in insert mode, a prompt or picker open, or a key sequence half typed), so
 Helix waits and shows "bb wants to show <file>:<line> (:bb-go)". Tell them to
 run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
 
@@ -45,9 +46,12 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
 - `helix_command`: anything else, as exactly one of `typed` (a command line
   without the colon), `static` (a command name from Helix's key maps) or
   `keys` (Helix key notation). Helix's command policy (`safe` by default: no
-  shell, nothing that discards unsaved work) may refuse; report the reason,
-  never retry or work around it. Do not use it for what a structured tool
-  does.
+  shell, nothing that discards unsaved work or speaks to bb in the user's
+  name, so not `:bb-send`, `:bb-ask` or `:bb-comment`) may refuse; report the
+  reason, never retry or work around it. Do not use it for what a structured
+  tool does. If the result says Helix is left with a prompt, picker or half
+  typed key sequence, your next jump waits until it is closed: finish in one
+  request or send `<esc>`.
 
 Some providers list these as deferred tools (for example
 `mcp__bb-bridge__helix_show`): load their schemas first.

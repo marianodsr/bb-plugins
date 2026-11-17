@@ -292,7 +292,14 @@ export async function startMockBridge(options) {
         editor.setMode(command.mode);
         return { ok: true };
       case "busy":
-        editor.touch();
+        // what: "typing" (default), "prompt", "picker", "keys" (a half-typed sequence), "idle"
+        if (command.what === "prompt" || command.what === "picker") editor.overlay = command.what;
+        else if (command.what === "keys") editor.pendingKeys = "<space>";
+        else if (command.what === "idle") {
+          editor.overlay = null;
+          editor.pendingKeys = null;
+          editor.busyUntil = 0;
+        } else editor.touch();
         return { ok: true };
       case "send": {
         if (![...clients].some((c) => c.subs.has("send"))) return { ok: false, error: "no client is subscribed to send" };
