@@ -482,3 +482,25 @@ conservatively. Newest last.
 84. **Not built: the sidebar mark** for threads with unviewed changes (the
     design's optional setting). The header count and the context card row
     cover the same need without adding a setting.
+
+## Fluidity pass
+
+85. **The editor surface outlives its page** (a pool in EditorSurface): the
+    renderer, its key layer and the session stream stay attached for 10
+    minutes after the page leaves, and the way back re-attaches the same
+    element. Measured: a warm return shows Helix 3-19 ms after the page
+    mounts (was 110-200 ms: stream attach and renderer). A session another
+    surface shows gets its own surface; an ended session is never reused.
+86. **The stream connects in parallel with the font and WebGL**, holding
+    output until the renderer is ready. A fresh page load draws Helix's
+    first frame 430-550 ms after the page mounts; what is left is bb's
+    session lookup (30-90 ms) and the stream's attach and scrollback replay
+    (about 300 ms), both bb's.
+87. **Resizes reach Helix once, when they settle** (90 ms quiet): dragging a
+    divider or the window resizes the surface every frame and Helix
+    reflows one time (measured: 20 frames of drag, one resize sent). The
+    page's editor owns its size unless another Helix surface has focus
+    (focus is often in the rail now).
+88. **`window.__helixTimeline`** records each step of opening (session,
+    renderer, attached, firstOutput, firstFrame, reused) for
+    `spike/open-timing.mjs`.
