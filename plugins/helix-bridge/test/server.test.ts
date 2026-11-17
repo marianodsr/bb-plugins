@@ -60,6 +60,10 @@ async function teardown() {
 }
 
 let capabilities: string[] | null = null;
+/** Settings for the next setup() (the agent tools are off by default). */
+let extraSettings: Record<string, string | number | boolean> = {};
+const ALL_TOOLS_ON = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true, toolEdit: true, toolPanes: true, toolCommand: true };
+
 async function setupWithCapabilities(caps: string[]) {
   capabilities = caps;
   try {
@@ -76,7 +80,7 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
   fake = createFakePluginHost({
     pluginId: "helix-bridge",
     agentSkillIds: ["helix-bridge"],
-    settings: { bridgeDir: dir },
+    settings: { bridgeDir: dir, ...extraSettings },
     sdk: {
       hosts: { list: async () => [makeHostResponse({ id: HOST, status: "connected" })] },
       environments: {
@@ -142,11 +146,26 @@ describe("instances and bindings", () => {
     expect(state.stdout).toMatch(/command policy: safe/u);
   });
 
-  it("offers the tools only to a thread a connected Helix serves", async () => {
+  it("offers no tool and no instruction by default: only the skill", async () => {
     const served = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
     );
-    // The core five; helix_edit, helix_panes and helix_command only with their settings.
+    expect(names(served.tools ?? [])).toEqual([]);
+    expect(served.instructions ?? null).toBeNull();
+    expect(served.skills).toEqual(["helix-bridge"]);
+  });
+
+  it("offers the switched-on tools only to a thread a connected Helix serves", async () => {
+    await teardown();
+    extraSettings = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true };
+    try {
+      await setup();
+    } finally {
+      extraSettings = {};
+    }
+    const served = await fake.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
+    );
     expect(names(served.tools)).toEqual(["helix_selection", "helix_show", "helix_tour", "helix_diagnostics", "helix_query"]);
     expect(served.instructions).not.toMatch(/helix_command/u);
     expect(served.instructions).toMatch(/helix_show/u);
@@ -168,13 +187,44 @@ describe("capabilities", () => {
   it("offers only the tools the connected Helix supports, and more as it gains them", async () => {
     await teardown();
     dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+    extraSettings = ALL_TOOLS_ON;
     await setupWithCapabilities(["editor"]);
     const context = makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never });
     expect(names((await fake.harness.behavior.resolveAgentConfiguration(context)).tools)).toEqual(["helix_selection", "helix_show"]);
     await teardown();
     dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
     await setupWithCapabilities(["editor", "reload", "locations", "diagnostics", "lsp"]);
+    extraSettings = {};
     expect(names((await fake.harness.behavior.resolveAgentConfiguration(context)).tools)).toEqual(["helix_selection", "helix_show", "helix_tour", "helix_diagnostics", "helix_query"]);
+  });
+});
+
+describe("the CLI an agent uses to show places", () => {
+  it("opens a place in the calling thread's Helix and says where the user is", async () => {
+    await wait(1600); // the mock's user is idle
+    const out = await fake.harness.behavior.runCli(["open", "util.go:3-5", "--note", "the helper"], { threadId: "thr_term" });
+    expect(out.stdout).toBe("Opened util.go:3-5.");
+    expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(join(workspace, "util.go"));
+    mock.control({ cmd: "busy" });
+    const deferred = await fake.harness.behavior.runCli(["open", "main.go:10"], { threadId: "thr_term" });
+    expect(deferred.stdout).toMatch(/^Deferred: the user is busy.*bb wants to show main.go:10 \(:bb-go\)/u);
+  });
+
+  it("runs a tour from arguments or from --stops, and jumps to the first stop", async () => {
+    await wait(1600);
+    const out = await fake.harness.behavior.runCli(["tour", "--title", "Greeting", "main.go:10 the constructor", "main.go:14-16 the greeting"], { threadId: "thr_term" });
+    expect(out.stdout).toBe("Tour with 2 stops; the user is at stop 1, main.go:10. They continue with :bb-next.");
+    expect(mock.control({ cmd: "state" }).lists).toMatchObject({ tour: 2 });
+    const fromStdin = await fake.harness.behavior.runCli(["tour", "--stops", "util.go:3 one\nutil.go:7 two\nmain.go:19 three"], { threadId: "thr_term" });
+    expect(fromStdin.stdout).toMatch(/^Tour with 3 stops/u);
+    const bad = await fake.harness.behavior.runCli(["tour", "main.go no line here"], { threadId: "thr_term" });
+    expect(bad.exitCode).not.toBe(0);
+  });
+
+  it("says plainly when no Helix serves the calling thread, and never drives another", async () => {
+    const out = await fake.harness.behavior.runCli(["open", "main.go:10"], { threadId: "thr_nobody" });
+    expect(out.exitCode).not.toBe(0);
+    expect(`${out.stdout}${out.stderr}`).toMatch(/No Helix is connected to this thread/u);
   });
 });
 

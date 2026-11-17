@@ -21,6 +21,7 @@ import { AgentWatcher } from "./server/watch";
 import { displayPath, lastLine, rootsOf } from "./server/format";
 import { SendHandler } from "./server/sends";
 import { Tree } from "./server/tree";
+import { Reviews, type ReviewDeps } from "./server/review";
 import { HelixService } from "./server/service";
 import { MIGRATIONS, Store } from "./server/store";
 import { TOOL_NAMES, instructionsFor, registerTools } from "./server/tools";
@@ -46,6 +47,11 @@ export default async function plugin(bb: BbPluginApi) {
     hxbPath: { type: "string", label: "Editor binary", description: "The Helix fork to run, a name on PATH or an absolute path.", default: "hxb" },
     autoReload: { type: "boolean", label: "Reload buffers when files change", description: "Reload Helix's unchanged buffers when bb sees files change. Buffers with unsaved changes are never touched.", default: true },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
+    toolShow: { type: "boolean", label: "Agent tool: helix_show", description: "Offer agents a tool to take you to a file and line. Off: they use bb hx open, taught by the skill, which costs no context until used.", default: false },
+    toolTour: { type: "boolean", label: "Agent tool: helix_tour", description: "Offer agents a tool for tours. Off: they use bb hx tour.", default: false },
+    toolSelection: { type: "boolean", label: "Agent tool: helix_selection", description: "Offer agents a tool to read what you have selected in Helix. Off: send it with :bb-send.", default: false },
+    toolQuery: { type: "boolean", label: "Agent tool: helix_query", description: "Offer agents the language server Helix runs. Off: they use their own (gopls, etc.).", default: false },
+    toolDiagnostics: { type: "boolean", label: "Agent tool: helix_diagnostics", description: "Offer agents the diagnostics Helix holds. Off: they run their own checks.", default: false },
     toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
     toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
     toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
@@ -109,7 +115,12 @@ export default async function plugin(bb: BbPluginApi) {
     commentsChanged: () => void annotator.refresh(),
     // :bb-files: the editor page for that thread shows its tree on the file.
     filesRequested: (threadId, path) => bb.realtime.publish("files", { threadId, path, at: Date.now() }),
-    reloaded: (instance, event) => watcher.onReloaded(instance, event).catch((error: unknown) => bb.log.warn(`following a reload on ${instance.key} failed: ${String(error)}`)),
+    reloaded: async (instance, event) => {
+      if (instance.environmentId) reviews.noteChange(instance.environmentId);
+      await watcher.onReloaded(instance, event).catch((error: unknown) => bb.log.warn(`following a reload on ${instance.key} failed: ${String(error)}`));
+    },
+    reviewRequested: (instance, target) => reviews.start(instance, target),
+    reviewTitle: (instance) => reviews.forInstance(instance.key)?.title ?? null,
     draftReady: (threadId) => {
       bb.rpc.experimental_invalidate([tags.drafts(threadId)]);
       bb.realtime.publish("draft", { threadId });
@@ -144,6 +155,17 @@ export default async function plugin(bb: BbPluginApi) {
     else set.delete(threadId);
     activeByEnvironment.set(environmentId, set);
   };
+  const reviews = new Reviews({
+    sdk: () => bb.sdk,
+    service,
+    gitRead: async (hostId, input) => (await hostCall("gitRead", input as Record<string, unknown>, { hostId, timeoutMs: 20_000 })) as Awaited<ReturnType<ReviewDeps["gitRead"]>>,
+    changed: (threadId) => {
+      if (threadId) bb.rpc.experimental_invalidate([tags.review(threadId)]);
+      bb.realtime.publish("review", { threadId, at: Date.now() });
+    },
+    log: (message) => bb.log.warn(message),
+  });
+
   const follower = new Follower({
     sdk: () => bb.sdk,
     service,
@@ -354,15 +376,27 @@ export default async function plugin(bb: BbPluginApi) {
   // Tools are offered only to a thread a connected Helix serves. bb builds a
   // session's tool list when the session starts, so a thread that started
   // before Helix connected gets them on its next session.
-  // Which optional tools are offered (configure is synchronous: kept current).
-  let switches = { helix_edit: false, helix_panes: false, helix_command: false } as Record<string, boolean>;
-  const readSwitches = (v: { toolEdit: boolean; toolPanes: boolean; toolCommand: boolean }) => (switches = { helix_edit: v.toolEdit, helix_panes: v.toolPanes, helix_command: v.toolCommand });
+  // No agent tool is offered unless its setting is on: agents get the skill
+  // (one listing line) and use bb hx. configure is synchronous: kept current.
+  type Switches = Record<"toolShow" | "toolTour" | "toolSelection" | "toolQuery" | "toolDiagnostics" | "toolEdit" | "toolPanes" | "toolCommand", boolean>;
+  let switches: Record<string, boolean> = {};
+  const readSwitches = (v: Switches) =>
+    (switches = {
+      helix_show: v.toolShow,
+      helix_tour: v.toolTour,
+      helix_selection: v.toolSelection,
+      helix_query: v.toolQuery,
+      helix_diagnostics: v.toolDiagnostics,
+      helix_edit: v.toolEdit,
+      helix_panes: v.toolPanes,
+      helix_command: v.toolCommand,
+    });
   void settings.get().then(readSwitches, () => {});
   settings.onChange((next) => readSwitches(next));
   bb.agents.configure((context) => {
     // Only the tools whose capability the connected Helix offers (bridge/hello)
     // and that the settings allow; the instruction names only those.
-    const tools = service.toolsForThreadSync(context.thread.id, { id: context.environment.id, path: context.environment.path }, context.host.id).filter((t) => switches[t] !== false);
+    const tools = service.toolsForThreadSync(context.thread.id, { id: context.environment.id, path: context.environment.path }, context.host.id).filter((t) => switches[t] === true);
     return tools.length > 0 ? { tools, skills: [SKILL_NAME], instructions: instructionsFor(tools) } : { tools: [], skills: [SKILL_NAME] };
   });
 
@@ -401,6 +435,7 @@ export default async function plugin(bb: BbPluginApi) {
           const environmentId = event.id;
           if (!environmentId) return;
           const changes = new Set(event.changes);
+          if (changes.has("work-status-changed") || changes.has("git-refs-changed")) reviews.noteChange(environmentId);
           if (changes.has("work-status-changed")) {
             if ((activeByEnvironment.get(environmentId)?.size ?? 0) > 0) service.noteAgentEdit(environmentId);
             follower.onEnvironmentChanged(environmentId);
@@ -414,6 +449,7 @@ export default async function plugin(bb: BbPluginApi) {
       follower.dispose();
       annotator.dispose();
       watcher.dispose();
+      reviews.dispose();
     },
   });
 
@@ -422,6 +458,10 @@ export default async function plugin(bb: BbPluginApi) {
     setActive(thread.id, thread.environmentId ?? null, true);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     void follower.onTurnStart(thread.id, thread.environmentId ?? null);
+    // The snapshot `:bb-review turn` compares with, where a Helix that can
+    // review serves this environment.
+    const reviewable = bridge.list().some((i) => i.summary.status === "connected" && i.environmentId === thread.environmentId && i.summary.capabilities.includes("review"));
+    if (reviewable) void service.threadInfo(thread.id).then((info) => reviews.onTurnStart(thread.id, info.hostId, info.path)).catch(() => {});
   });
   bb.events.on("thread.idle", ({ thread }) => {
     setActive(thread.id, thread.environmentId ?? null, false);

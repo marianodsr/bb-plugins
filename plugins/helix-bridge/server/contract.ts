@@ -13,6 +13,7 @@ export const tags = {
   instances: "instances",
   drafts: (threadId: string) => `drafts:${threadId}`,
   setup: "setup",
+  review: (threadId: string) => `review:${threadId}`,
 };
 
 export const appInstanceSchema = z.object({

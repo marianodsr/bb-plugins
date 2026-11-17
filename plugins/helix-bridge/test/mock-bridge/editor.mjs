@@ -79,6 +79,7 @@ export class Editor {
     this.diagnostics = new Map(); // path -> [{ range, severity, message, source }]
     this.annotations = new Map(); // namespace\0path -> items
     this.reveals = []; // { paths, follow, at } from editor/reload and editor/reveal
+    this.review = null; // { id, title, base, files, inline }
     this.status = null;
     this.lspRunning = true;
     this.listeners = new Set();
@@ -362,6 +363,33 @@ export class Editor {
     this.emit("event/documentChanged", { docId: doc.docId, path: doc.path, version: doc.version, modified: false });
     const ranges = tailA >= first ? [{ start: { line: first + 1, col: 1 }, end: { line: tailA + 2, col: 1 } }] : [];
     this.emit("event/reloaded", { docId: doc.docId, path: doc.path, version: doc.version, ranges, removed: Math.max(0, tailB - first + 1), origin });
+  }
+
+  /** review/set: compare against `base` (null: HEAD) and offer `files` in :bb-review. */
+  setReview({ id, title, base, files, inline = true, open = false, interrupt }) {
+    if (typeof id !== "string" || !id) throw new BridgeError(ERR.invalidParams, "id is required", { field: "id" });
+    if (typeof title !== "string") throw new BridgeError(ERR.invalidParams, "title is required", { field: "title" });
+    if (base !== null && (typeof base !== "object" || !/^[0-9a-f]{40}$/u.test(String(base?.rev)))) throw new BridgeError(ERR.invalidParams, "base must be null or { rev: <full commit sha> }", { field: "base" });
+    if (!Array.isArray(files) || files.length > 5000) throw new BridgeError(ERR.invalidParams, "files must be at most 5000", { field: "files" });
+    for (const f of files) {
+      if (typeof f.path !== "string" || !["added", "modified", "deleted", "renamed"].includes(f.status)) throw new BridgeError(ERR.invalidParams, "each file needs path and status", { field: "files" });
+    }
+    const normalized = files.map((f) => ({ ...f, path: this.abs(f.path) }));
+    // The same id replaces the list in place without moving the user.
+    this.review = { id, title, base: base?.rev ?? null, files: normalized, inline };
+    let deferred = false;
+    if (open) deferred = this.maybeDefer(interrupt, "open the review", () => ({})).deferred;
+    return { files: normalized.length, base: base?.rev ?? "HEAD", deferred };
+  }
+
+  clearReview() {
+    this.review = null;
+    return {};
+  }
+
+  reviewState() {
+    const r = this.review;
+    return r ? { active: true, id: r.id, title: r.title, base: r.base ?? "HEAD", inline: r.inline, files: r.files.length } : { active: false, id: null, title: null, base: null, inline: false, files: 0 };
   }
 
   /** Capability `watch`: what Helix's own watcher does when open files change on disk. */

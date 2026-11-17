@@ -192,8 +192,15 @@ export class HelixService {
       throw new BridgeFailure("not_found", `no Helix instance "${wanted}". Running: ${all.map((i) => i.key).join(", ") || "none"}`);
     }
     if (options.threadId) {
+      // From a thread, only its own Helix: never someone else's editor.
       const serving = await this.instancesForThread(options.threadId);
       if (serving[0]) return serving[0];
+      throw new BridgeFailure(
+        "not_found",
+        all.some((i) => i.summary.status === "connected")
+          ? "No Helix is connected to this thread. The user can open it from the thread (the Helix button), or bind a running one with bb hx bind --instance <pid>."
+          : "No Helix is running with the bridge. The user can open it from the thread (the Helix button); bb hx doctor says what is missing.",
+      );
     }
     const connected = all.filter((i) => i.summary.status === "connected");
     if (connected.length === 1) return connected[0]!;

@@ -3,7 +3,7 @@
 The bb half of the Helix bridge: Helix (the `hxb` fork) beside a thread, on
 bb's terminal sessions rendered with Ghostty's core; sends, comments and the
 editor position from Helix to the thread; reloads and change lists from the
-agent to Helix; `bb hx` and the `helix_*` agent tools. The wire contract is
+agent to Helix; `bb hx`, and a skill that takes the user to code. The wire contract is
 `bb-bridge/PROTOCOL.md` in the fork (github.com/marianodsr/helix, branch
 `bb-bridge`). Agent-facing usage is in `skills/helix-bridge/SKILL.md`;
 choices are in `DECISIONS.md`.
@@ -18,6 +18,27 @@ bb hx doctor        # what is missing on this machine, with the command for each
 The editor is `hxb` on PATH (setting `hxbPath` overrides). The bridge
 directory follows Helix: `$XDG_CACHE_HOME/helix/bridge` or
 `~/.cache/helix/bridge` (setting `bridgeDir` overrides).
+
+## Agents
+
+An agent hardly needs to know about Helix: the files and lines you mean
+arrive in your message (`:bb-send`, comments), it edits files with its own
+tools and Helix shows the change, and it uses its own language server for
+static analysis. So threads get no Helix tools and no instruction by
+default; the only standing context is the `helix-bridge` skill's one-line
+listing. When you ask "take me to ..." or "walk me through ...", the skill
+loads and the agent runs:
+
+```sh
+bb hx open internal/auth/session.go:42-58 --note "token refresh starts here"
+bb hx tour --title "Request flow" "cmd/server/main.go:31 entry" "internal/auth/session.go:42 auth"
+```
+
+Both act on the Helix of the thread they run in, and say so when there is
+none. The tools still exist for those who want them: settings `toolShow`,
+`toolTour`, `toolSelection`, `toolQuery`, `toolDiagnostics`, `toolPanes`,
+`toolCommand`, `toolEdit` (all off; `skills/helix-bridge/tools.md` covers
+them).
 
 ## Keys in Helix
 

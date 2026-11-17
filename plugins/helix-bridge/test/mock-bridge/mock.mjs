@@ -16,7 +16,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { BridgeError, ERR, Editor } from "./editor.mjs";
 
-export const ALL_CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal", "watch"];
+export const ALL_CAPABILITIES = ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp", "applyEdits", "annotations", "reveal", "review", "watch"];
 const EVENT_KINDS = ["selection", "documents", "diagnostics", "mode", "send", "lsp", "externalChange"];
 const KIND_OF = {
   "event/selection": "selection",
@@ -260,6 +260,15 @@ export async function startMockBridge(options) {
       case "annotations/clear":
         need("annotations");
         return editor.clearAnnotations(params);
+      case "review/set":
+        need("review");
+        return editor.setReview(params);
+      case "review/clear":
+        need("review");
+        return editor.clearReview();
+      case "review/state":
+        need("review");
+        return editor.reviewState();
       case "editor/reveal":
         need("reveal");
         return editor.reveal(params);
@@ -369,7 +378,7 @@ export async function startMockBridge(options) {
         return { ok: true };
       }
       case "state":
-        return { ok: true, subscriptions: [...clients].map((c) => [...c.subs].sort()), state: editor.state(), status: editor.status, pendingJump: Boolean(editor.pendingJump), lists: Object.fromEntries([...editor.lists].map(([k, v]) => [k, v.items.length])), activeList: editor.activeList, annotations: Object.fromEntries([...editor.annotations].map(([k, v]) => [k.split("\0")[1], v])), reveals: editor.reveals, stats, clients: clients.size, views: editor.viewList() };
+        return { ok: true, subscriptions: [...clients].map((c) => [...c.subs].sort()), review: editor.review, state: editor.state(), status: editor.status, pendingJump: Boolean(editor.pendingJump), lists: Object.fromEntries([...editor.lists].map(([k, v]) => [k, v.items.length])), activeList: editor.activeList, annotations: Object.fromEntries([...editor.annotations].map(([k, v]) => [k.split("\0")[1], v])), reveals: editor.reveals, stats, clients: clients.size, views: editor.viewList() };
       case "go":
         return { ok: true, ...editor.go() };
       case "crash":

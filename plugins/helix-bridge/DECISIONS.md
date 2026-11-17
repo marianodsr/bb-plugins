@@ -309,3 +309,18 @@ conservatively. Newest last.
     (tool schemas + instruction + skill listing): 8,365 before; 5,122 with
     the defaults now; 3,813 with the core set (show, tour, selection, query,
     diagnostics).
+55. **No agent tools by default** (the owner's call): an agent needs the
+    files and lines the user means (they arrive with `:bb-send` and
+    comments), edits with its own tools (Helix shows it), and uses its own
+    language server. Every `helix_*` tool has a setting, all off;
+    `agents.configure` offers the skill and nothing else unless one is on.
+    "Take me to X" and tours go through `bb hx open path:line[-endLine]` and
+    `bb hx tour "path:line note" ...` (or `--stops-stdin`), taught by a
+    short skill whose listing triggers on "take me to", "show me where",
+    "walk me through", "open in my editor". Standing context per thread: the
+    skill's listing line (description 113 characters). From a thread, the
+    CLI acts only on that thread's Helix and says so plainly when there is
+    none (it no longer falls back to the only Helix running). The previous
+    skill text is `skills/helix-bridge/tools.md`, for people who turn tools
+    on. Checked with a real agent in a fresh thread: it loaded the skill,
+    searched, ran `bb hx open util.go:7-9`, and Helix landed there.

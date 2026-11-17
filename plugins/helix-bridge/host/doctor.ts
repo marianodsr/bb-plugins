@@ -162,10 +162,10 @@ export async function runDoctor(input: {
   }
   checks.push({
     id: "tools",
-    label: "Agent tools",
+    label: "Agents",
     ok: true,
     level: "ok",
-    detail: "an agent session gets the helix_* tools when it starts with a connected Helix serving its thread; a thread that started earlier gets them in its next session",
+    detail: "agents get no Helix tools by default: the helix-bridge skill teaches bb hx open and bb hx tour (one listing line in context). Turning a tool on in the plugin's settings reaches sessions that start after it",
     fix: null,
   });
   return { checks, hxbResolved: resolved, hxbVersion: version };

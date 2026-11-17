@@ -51,6 +51,8 @@ export interface SendDeps {
   commentsChanged(): void;
   /** `:bb-files` in a Helix the editor page shows: open its tree on `path`. */
   filesRequested?(threadId: string, path: string | null): void;
+  /** The review active in this Helix, to name it when its comments go to the agent. */
+  reviewTitle?(instance: BoundInstance): string | null;
   /** Helix reloaded a buffer (`event/reloaded`). */
   reloaded?(instance: BoundInstance, event: Record<string, unknown>): Promise<void>;
   /** `:bb-review <target>`: start or end a review. Returns the status-line text. */
@@ -247,12 +249,22 @@ export class SendHandler {
     if (environmentId && (await this.reviewEditorRunning())) {
       const pending = await this.reviewPending(environmentId, threadId);
       if (pending.length > 0) {
-        await this.deps.sdk().plugins.callRpc({
-          pluginId: REVIEW_EDITOR,
-          method: "sendToThread",
-          input: { commentIds: pending.slice(0, 100).map((c) => c.id), threadId },
-          outputSchema: z.object({ prompt: z.string() }).passthrough(),
-        });
+        const ids = pending.slice(0, 100).map((c) => c.id);
+        const review = this.deps.reviewTitle?.(instance) ?? null;
+        if (review) {
+          // Name the review so the agent knows what the comments are about:
+          // Review Editor's own prompt, with one line on top, then marked sent.
+          const { prompt } = await this.deps.sdk().plugins.callRpc({ pluginId: REVIEW_EDITOR, method: "compilePrompt", input: { commentIds: ids }, outputSchema: z.object({ prompt: z.string() }).passthrough() });
+          await this.deps.sdk().threads.send({ threadId, mode: "auto", input: [{ type: "text", text: `Review of ${review}.\n\n${prompt}`, mentions: [] }] });
+          await this.deps.sdk().plugins.callRpc({ pluginId: REVIEW_EDITOR, method: "markSent", input: { commentIds: ids, threadId }, outputSchema: z.object({}).passthrough() });
+        } else {
+          await this.deps.sdk().plugins.callRpc({
+            pluginId: REVIEW_EDITOR,
+            method: "sendToThread",
+            input: { commentIds: ids, threadId },
+            outputSchema: z.object({ prompt: z.string() }).passthrough(),
+          });
+        }
         sent += pending.length;
         parts.push(`${pending.length} (review-editor)`);
       }
@@ -261,7 +273,8 @@ export class SendHandler {
     if (local.length > 0) {
       const roots = rootsOf(instance);
       const blocks = local.map((c, i) => `${i + 1}. \`${displayPath(c.path, roots)}:${lineSpan(c.startLine, c.endLine)}\`${c.modified ? " (unsaved changes in the editor)" : ""}\n${fence(capLines(c.snippet, 60).text, c.languageId)}\n${c.body}`);
-      const text = `Review comments from Helix (${local.length}). For each one, make the change or explain why not.\n\n${blocks.join("\n\n")}`;
+      const review = this.deps.reviewTitle?.(instance) ?? null;
+      const text = `${review ? `Review of ${review}. ` : ""}Review comments from Helix (${local.length}). For each one, make the change or explain why not.\n\n${blocks.join("\n\n")}`;
       await this.sendNow(threadId, text);
       this.deps.store.markCommentsSent(local.map((c) => c.id));
       sent += local.length;

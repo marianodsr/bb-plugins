@@ -148,9 +148,40 @@ export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHo
                 ...(options.note ? { note: options.note } : {}),
                 interrupt: options.now ? "always" : "whenIdle",
               });
-              const where = `${displayPath(result.path, rootsOf(instance))}${location.line ? `:${location.line}` : ""}`;
+              const where = `${displayPath(result.path, rootsOf(instance))}${location.line ? `:${location.line}${location.endLine ? `-${location.endLine}` : ""}` : ""}`;
               const stale = result.stale ? "\nThe buffer may be stale: files changed on disk during an agent's turn and reload is not available in this Helix yet (:reload)." : "";
-              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed). Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane ? ` in pane ${result.pane}` : ""}.${stale}` };
+              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is busy (typing, a prompt open or a key sequence half typed). Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane && options.split && options.split !== "none" ? ` in pane ${result.pane}` : ""}.${stale}` };
+            });
+          },
+        }),
+        tour: cliCommand({
+          summary: "Take the user through several places in order, each with a note; jumps to the first (they continue with :bb-next)",
+          positionals: [{ name: "stops", description: 'Stops as "path:line[-endLine] note", one per argument', variadic: true }],
+          options: {
+            instance: instanceOption,
+            title: { type: "string", description: "The tour's title (default: Tour)" },
+            stops: { type: "string", description: 'Stops, one per line: "path:line[-endLine] note"', stdin: true },
+            now: { type: "boolean", description: "Jump even if the user is busy" },
+          },
+          async run({ positionals, options }, ctx) {
+            return guard(async () => {
+              const lines = [...positionals.stops, ...(options.stops ?? "").split("\n")].map((l) => l.trim()).filter(Boolean);
+              if (lines.length === 0) fail("no stops", "invalid_params", 'Pass stops as "path:line note" arguments, or one per line with --stops-stdin');
+              const items = lines.map((l, i) => {
+                const [location = "", ...note] = l.split(/\s+/u);
+                const parsed = parseLocation(location);
+                if (!parsed.line) fail(`stop ${i + 1} has no line: "${l}"`, "invalid_params", 'Write each stop as "path:line note"');
+                return { path: parsed.path, line: parsed.line!, ...(parsed.endLine ? { endLine: parsed.endLine } : {}), note: note.join(" ") || `${i + 1}/${lines.length}`, label: `${i + 1}/${lines.length}` };
+              });
+              const instance = await target(options.instance, ctx.threadId);
+              const result = await service.tour(instance, { title: options.title ?? "Tour", items, start: 0, interrupt: options.now ? "always" : "whenIdle" });
+              const first = `${items[0]!.path}:${items[0]!.line}`;
+              return {
+                exitCode: 0,
+                stdout: result.deferred
+                  ? `Tour with ${result.count} stops set. Deferred: the user is busy; Helix shows "bb wants to show ${first} (:bb-go)". They continue with :bb-next.`
+                  : `Tour with ${result.count} stops; the user is at stop 1, ${first}. They continue with :bb-next.`,
+              };
             });
           },
         }),

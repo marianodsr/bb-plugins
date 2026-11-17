@@ -1,111 +1,33 @@
 ---
 name: helix-bridge
-description: Work with the user's Helix editor through Helix Bridge - take them to code (helix_show, helix_tour), read their selection and diagnostics, query Helix's language server, edit in their buffers, or use the `bb hx` CLI.
+description: Show the user code in their Helix editor - "take me to", "show me where", "walk me through", "open in my editor".
 ---
 
-# Helix Bridge
+# Showing the user code in Helix
 
-The user edits in Helix (a fork run as `hxb`) connected to bb. Each Helix
-instance is bound to one bb thread: the thread whose terminal started it, an
-explicit binding (`bb hx bind`), or the most recent thread in the environment
-that contains its workspace. Tools act on the Helix serving your thread.
+The user edits in Helix, connected to this thread. To take them somewhere,
+find the place yourself (search, read, your own tools), then:
 
-## Take the user somewhere
+```sh
+bb hx open internal/auth/session.go:42-58 --note "token refresh starts here"
+```
 
-When the user asks to be shown something ("take me to the entry point",
-"where is X handled"):
+`path:line` or `path:line-endLine`, relative to the workspace. It prints
+where they landed. For several places in order:
 
-1. Find the place: `helix_query` (`definition`, `references`,
-   `workspaceSymbols`, `documentSymbols`, ...) or a search.
-2. `helix_show` `{ path, line, endLine?, note }` puts them on it. Use
-   `split: "vertical"` to keep their current file beside it.
-3. Several places in order: `helix_tour` `{ title, stops: [{ path, line, note }] }`.
-   They walk it with `:bb-next` and `:bb-prev`.
-4. End your answer with one line saying where they are now.
+```sh
+bb hx tour --title "Request flow" "cmd/server/main.go:31 entry point" "internal/http/router.go:88 routes" "internal/auth/session.go:42 auth check"
+```
 
-A result that says **deferred** is not a failure: the user is busy (typing,
-in insert mode, a prompt or picker open, or a key sequence half typed), so
-Helix waits and shows "bb wants to show <file>:<line> (:bb-go)". Tell them to
-run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
+Each stop is `"path:line[-endLine] note"`; they continue with `:bb-next`.
+Many stops: one per line with `--stops-stdin`.
 
-## Read what the user sees
+End your answer with one line saying where the user is now.
 
-- `helix_selection`: the focused file, selections (or the cursor line) and
-  the text, and whether the buffer has unsaved changes. The user's messages
-  do not carry their editor position unless they attach it (or turned on
-  `positionInMessages`); when "this", "here" or "the current file" is
-  unclear, call `helix_selection` instead of guessing.
-- `helix_diagnostics` `{ path?, severity? }`: what Helix's language servers
-  report, errors first.
-- `helix_query`: the language server Helix already runs. Positions are
-  1-based line and column. Prefer it to starting another server.
-- `helix_panes`: the panes and what each shows; focus or close one.
-
-## Change files and the editor
-
-- Edit files with your normal file tools. Helix reloads what you change and
-  shows it to the user as it lands; there is nothing to do in the editor.
-  (`helix_edit`, editing inside the user's buffers, exists only if the user
-  turned on the `toolEdit` setting.)
-- `helix_command` (when offered): anything else, as exactly one of `typed` (a command line
-  without the colon), `static` (a command name from Helix's key maps) or
-  `keys` (Helix key notation). Helix's command policy (`safe` by default: no
-  shell, nothing that discards unsaved work or speaks to bb in the user's
-  name, so not `:bb-send`, `:bb-ask` or `:bb-comment`) may refuse; report the
-  reason, never retry or work around it. Do not use it for what a structured
-  tool does. If the result says Helix is left with a prompt, picker or half
-  typed key sequence, your next jump waits until it is closed: finish in one
-  request or send `<esc>`.
-
-Some providers list these as deferred tools (for example
-`mcp__bb-bridge__helix_show`): load their schemas first.
-
-Which tools you get depends on what the connected Helix can do and on the
-user's settings: `helix_selection` and `helix_show` need only the basics;
-`helix_tour`, `helix_diagnostics` and `helix_query` appear when Helix offers
-them; `helix_panes`, `helix_command` and `helix_edit` are off unless the
-user turns them on (settings `toolPanes`, `toolCommand`, `toolEdit`). Tools are attached when your session starts with a connected Helix
-serving the thread; a thread that started earlier gets them in its next
-session. Until then, use the CLI. A tool that answers "this Helix does not
-offer ... yet" is telling you a fact: say so instead of retrying.
-
-When `helix_show` says the buffer may be stale, Helix cannot reload files
-yet: tell the user to run `:reload` if the file looks out of date.
-
-## From the user's side
-
-In Helix the user runs `:bb-send [note]` (selection becomes a draft in the
-thread's composer; `:bb-send!` sends it), `:bb-ask <question>` (sent at
-once), `:bb-comment <text>` (a review comment on the selected lines, kept
-until `:bb-comments-send` sends them all). With Review Editor installed,
-those comments are Review Editor comments: reply and resolve them with
-`review_reply` and `review_resolve`; your replies show under the commented
-lines in Helix, and a resolved comment leaves the code once the reviewer has
-seen it. Each file you edit is reloaded in Helix as your edit lands (shown
-as if typed, when Helix offers it); when a turn ends, Helix gets the list of
-places you changed and the user walks it with `:bb-next`.
-
-## CLI
-
-`bb hx` runs on any machine bb knows; `--instance <pid>` picks an instance,
-otherwise the one serving the calling thread, or the only one.
-
-| Command | Does |
-|---|---|
-| `bb hx list` | instances, where they are, their threads |
-| `bb hx state` | focused file and cursor, mode, diagnostics, capabilities, command policy |
-| `bb hx open <path[:line[:col]]> [--split vertical] [--note] [--now]` | show a place |
-| `bb hx selection [--brief]` | the selection with text |
-| `bb hx diagnostics [path] [--severity error]` | diagnostics |
-| `bb hx query <kind> <path:line:col> [--query] [--new-name]` | language-server queries |
-| `bb hx panes [--focus N] [--close N]` | panes |
-| `bb hx command <line> \| --static <name> \| --keys <keys>` | run a command |
-| `bb hx reload [paths...] [--force]` | reload changed buffers |
-| `bb hx bind [--instance] [--thread]`, `bb hx unbind` | binding |
-| `bb hx doctor` | what is missing on this machine and the command to fix it |
-
-Settings (`bb plugin config helix-bridge set <key> <value>`): `hxbPath`
-(default `hxb` on PATH), `autoReload`, `followAgent`, `positionInMessages`
-(default off: only messages the user attaches it to carry the position),
-`hud`, `fontFamily`, `fontSize`, `bridgeDir` (empty follows Helix's cache
-directory).
+- **Deferred** in the output is not a failure: they were typing, and Helix
+  offers `:bb-go` to make the jump. Tell them; add `--now` only if they asked
+  to be moved at once.
+- **No Helix is connected to this thread**: say so; they open it from the
+  thread's Helix button.
+- Do not edit through Helix: change files with your normal tools; Helix
+  shows the change by itself.
