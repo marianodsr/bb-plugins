@@ -48,8 +48,12 @@ export function pidAlive(pid: number): boolean {
 export interface ManagerDeps {
   /** Publish every instance's summary to the server. */
   emitState(payload: { bridgeDir: string; instances: InstanceSummary[] }): void;
-  /** Keep the worker alive; returns a release function. */
-  retain(): () => void;
+  /**
+   * Whether the worker should be kept alive (some instance is connected).
+   * A lease can only be taken inside an active host call, so the host entry
+   * takes it on the next call and drops it as soon as this says false.
+   */
+  leaseWanted(wanted: boolean): void;
   /** Watch a directory; returns a disposer. Optional (tests poll). */
   watch?(dir: string, onChange: () => void): Promise<() => void>;
   log?(message: string): void;
@@ -78,7 +82,7 @@ export class InstanceManager {
   private lastSignalAt = 0;
   private rescanTimer: ReturnType<typeof setInterval> | null = null;
   private unwatch: (() => void) | null = null;
-  private release: (() => void) | null = null;
+  private wantLease = false;
   private disposed = false;
 
   constructor(
@@ -241,8 +245,16 @@ export class InstanceManager {
       this.changed();
       await this.resync(instance);
     } catch (error) {
-      instance.summary.error = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.log?.(`setting up ${instance.id} failed: ${message}`);
+      // Close quietly: keep this reason rather than the close handler's.
+      instance.connection = null;
       connection.close();
+      instance.summary.status = "disconnected";
+      instance.summary.error = message;
+      this.updateLease();
+      this.changed();
+      this.retry(instance);
     }
   }
 
@@ -418,11 +430,13 @@ export class InstanceManager {
 
   private updateLease(): void {
     const connected = [...this.instances.values()].some((i) => i.connection?.connected);
-    if (connected && !this.release) this.release = this.deps.retain();
-    else if (!connected && this.release) {
-      this.release();
-      this.release = null;
-    }
+    if (connected === this.wantLease) return;
+    this.wantLease = connected;
+    this.deps.leaseWanted(connected);
+  }
+
+  get leaseWanted(): boolean {
+    return this.wantLease;
   }
 
   list(): InstanceSummary[] {
@@ -466,8 +480,10 @@ export class InstanceManager {
       instance.connection?.close();
     }
     this.instances.clear();
-    this.release?.();
-    this.release = null;
+    if (this.wantLease) {
+      this.wantLease = false;
+      this.deps.leaseWanted(false);
+    }
   }
 }
 

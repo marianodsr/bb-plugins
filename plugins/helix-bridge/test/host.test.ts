@@ -39,11 +39,8 @@ async function mock(options: Record<string, unknown> = {}): Promise<Mock> {
 function manager(): InstanceManager {
   const created = new InstanceManager(dir, {
     emitState: (payload) => signals.push({ at: Date.now(), instances: payload.instances }),
-    retain: () => {
-      leases += 1;
-      return () => {
-        leases -= 1;
-      };
+    leaseWanted: (wanted) => {
+      leases = wanted ? 1 : 0;
     },
   });
   managers.push(created);
@@ -109,7 +106,7 @@ describe("discovery", () => {
   });
 
   it("marks a protocol it does not speak as incompatible", async () => {
-    const m = new InstanceManager(dir, { emitState: () => {}, retain: () => () => {} });
+    const m = new InstanceManager(dir, { emitState: () => {}, leaseWanted: () => {} });
     managers.push(m);
     // A second registry entry pointing at a socket that answers protocol 2.
     const { createServer } = await import("node:net");

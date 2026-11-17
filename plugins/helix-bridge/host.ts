@@ -3,7 +3,9 @@
 //
 // The worker is lazy: the first call starts an InstanceManager for the bridge
 // directory and keeps the call context's signal emitter for later events. A
-// worker lease holds the worker while any instance is connected.
+// worker lease holds the worker while any instance is connected; leases can
+// only be taken inside a call, so every call syncs it (the server reconciles
+// every 30 s, well inside the 5-minute idle window).
 import { experimental_defineHostEntry, type ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { hostContract, hostSignals } from "./shared/host-contract";
 import { readGhosttyConfig, runDoctor } from "./host/doctor";
@@ -13,21 +15,32 @@ type Context = ExperimentalHostRpcContext<typeof hostSignals>;
 
 let manager: InstanceManager | null = null;
 let emit: Context["experimental_emitSignal"] | null = null;
+let lease: { dispose(): Promise<void> } | null = null;
+
+function dropLease(): void {
+  void lease?.dispose();
+  lease = null;
+}
+
+/** Take the worker lease inside an active call when the manager wants one. */
+function syncLease(context: Context): void {
+  if (manager?.leaseWanted && !lease) lease = context.experimental_retainWorker();
+  else if (!manager?.leaseWanted && lease) dropLease();
+}
 
 /** The manager for `bridgeDir` (empty: Helix's default; null: whichever is running). */
 function managerFor(bridgeDir: string | undefined | null, context: Context): InstanceManager {
   emit = context.experimental_emitSignal.bind(context);
-  if (bridgeDir === null && manager) return manager;
+  if (bridgeDir === null && manager) return withLease(manager, context);
   const dir = bridgeDir?.trim() ? bridgeDir.trim() : defaultBridgeDir();
-  if (manager && manager.bridgeDir === dir) return manager;
+  if (manager && manager.bridgeDir === dir) return withLease(manager, context);
   manager?.dispose();
   const created = new InstanceManager(dir, {
     emitState: (payload) => {
       void emit?.("state", payload).catch(() => {});
     },
-    retain: () => {
-      const lease = context.experimental_retainWorker();
-      return () => void lease.dispose();
+    leaseWanted: (wanted) => {
+      if (!wanted) dropLease();
     },
     watch: async (path, onChange) => {
       const subscription = await context.experimental_watch({ rootPath: path, debounceMs: 50, maxWaitMs: 300 }, () => onChange());
@@ -38,7 +51,12 @@ function managerFor(bridgeDir: string | undefined | null, context: Context): Ins
   manager = created;
   context.lifecycle.signal.addEventListener("abort", () => created.dispose(), { once: true });
   created.start();
-  return created;
+  return withLease(created, context);
+}
+
+function withLease(current: InstanceManager, context: Context): InstanceManager {
+  syncLease(context);
+  return current;
 }
 
 const entry = experimental_defineHostEntry({
@@ -63,6 +81,7 @@ const entry = experimental_defineHostEntry({
   dispose: () => {
     manager?.dispose();
     manager = null;
+    dropLease();
   },
 });
 
