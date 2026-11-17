@@ -16,7 +16,7 @@ import { arrivals, commandRequest, composerFocusRequest } from "../stores";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { visibleSurfaces } from "../surface/EditorSurface";
 import { BindDialog } from "../thread/ThreadParts";
-import { ReviewDialog } from "../review/ReviewParts";
+import { railFocus, railTab } from "../rail/railStore";
 
 export { arrivals, commandRequest, composerFocusRequest, useArrival } from "../stores";
 
@@ -33,26 +33,13 @@ export function HelixOverlay() {
   const request = useSyncExternalStore(commandRequest.subscribe, commandRequest.get);
 
   useEffect(() => {
-    if (!request || request.kind === "bind" || request.kind === "review") return;
+    if (!request || request.kind === "bind") return;
     commandRequest.set(null);
-    if (request.kind === "open") {
-      navigate.toPluginPanel(EDITOR_PANEL, { subPath: request.threadId });
-      return;
-    }
-    void (async () => {
-      const { instance } = await rpc.call("threadStatus", { threadId: request.threadId });
-      if (!instance) {
-        toast("No Helix is connected to this thread");
-        return;
-      }
-      const result = await rpc.call("reload", { instanceKey: instance.key });
-      toast(
-        result.skippedModified.length
-          ? `Reloaded ${result.reloaded} buffers; not reloaded, unsaved changes: ${result.skippedModified.join(", ")}`
-          : `Reloaded ${result.reloaded} ${result.reloaded === 1 ? "buffer" : "buffers"}`,
-      );
-    })().catch((error: unknown) => toast(`Reload failed: ${error instanceof Error ? error.message : String(error)}`));
-  }, [request, navigate, rpc]);
+    // "Review changes" is the editor page on its Changes tab: opening it starts the review.
+    if (request.kind === "review") railTab.set("changes");
+    navigate.toPluginPanel(EDITOR_PANEL, { subPath: request.threadId });
+    if (request.kind === "review") for (const delay of [0, 300, 900]) window.setTimeout(() => railFocus.get(request.threadId)?.(), delay);
+  }, [request, navigate]);
 
   useRealtime("draft", () => setNudge((n) => n + 1));
 
@@ -120,6 +107,5 @@ export function HelixOverlay() {
     });
   });
 
-  if (request?.kind === "review") return <ReviewDialog threadId={request.threadId} open onOpenChange={(open) => !open && commandRequest.set(null)} />;
   return request?.kind === "bind" ? <BindDialog threadId={request.threadId} open onOpenChange={(open) => !open && commandRequest.set(null)} /> : null;
 }

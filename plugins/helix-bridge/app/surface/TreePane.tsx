@@ -49,9 +49,15 @@ export function TreePane({
   onQuit,
   onOpened,
   onReady,
+  fill,
+  onEscape,
 }: {
   threadId: string;
   width: number;
+  /** Take the parent's width (the rail) instead of `width`. */
+  fill?: boolean;
+  /** Escape leaves the tree for the editor (the rail keeps yazi running). */
+  onEscape?(): void;
   config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; faces?: SurfaceFont["faces"]; boldIsBright: boolean | null; optionAsAlt: OptionAsAlt; background: string | null; foreground: string | null };
   handle: { current: TreeHandle | null };
   /** yazi quit (or its session ended): hide the pane. */
@@ -75,6 +81,8 @@ export function TreePane({
   onOpenedRef.current = onOpened;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
   const lastKeyAt = useRef(0);
   const lastOpenAt = useRef(0);
   const ready = useRef(false);
@@ -175,6 +183,12 @@ export function TreePane({
     };
     const onKey = (event: KeyboardEvent) => {
       lastKeyAt.current = Date.now();
+      if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && onEscapeRef.current) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onEscapeRef.current();
+        return;
+      }
       if (OPEN_KEYS.has(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) lastOpenAt.current = Date.now();
     };
     const onPointer = () => {
@@ -233,7 +247,7 @@ export function TreePane({
   }, [terminalId, config.fontFamily, config.fontSize, config.fontStyle, config.faces, config.boldIsBright, sdk, handle]);
 
   return (
-    <div className="relative flex min-h-0 shrink-0 flex-col bg-background" style={{ width }} data-helix-tree={threadId}>
+    <div className={cn("relative flex min-h-0 flex-col bg-background", fill ? "min-w-0 flex-1" : "shrink-0")} style={fill ? undefined : { width }} data-helix-tree={threadId}>
       <div ref={host} className={cn("helix-surface min-h-0 flex-1 overflow-hidden", (missing || failure) && "hidden")} data-helix-tree-terminal />
       {missing ? <TreeSetup command={missing} /> : failure ? <p className="p-3 text-xs leading-5 text-muted-foreground">The file tree could not start: {failure}</p> : !terminalId ? <TreeSkeleton /> : null}
     </div>

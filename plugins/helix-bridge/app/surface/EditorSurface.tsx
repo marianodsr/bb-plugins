@@ -13,6 +13,7 @@ import { HudMeter, type HudSnapshot } from "../terminal/hud";
 import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
 import { createRenderer, type RendererDiagnostics, type SurfaceFont, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
+import { editorFocus as editorFocusers, railFocus, railHasFocus, railSheet, railTab, sidebarRailVisible } from "../rail/railStore";
 import { TreePane, type TreeHandle } from "./TreePane";
 
 /** Pane controls of the visible surfaces, by thread, for the app's commands. */
@@ -143,6 +144,7 @@ function Session({
   const pendingReveal = useRef<string | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<RendererDiagnostics | null>(null);
+  const [grid, setGrid] = useState<{ cols: number; rows: number } | null>(null);
   const [restart, setRestart] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -263,6 +265,9 @@ function Session({
       },
       onResize: (cols, rows) => {
         if (owns()) stream.resize(cols, rows);
+        element.dataset.cols = String(cols);
+        setGrid({ cols, rows });
+        window.dispatchEvent(new CustomEvent("helix-bridge:grid", { detail: { threadId, cols, rows } }));
       },
       onClipboardWrite: (text) => void copyToClipboard({ text }),
     }).then(
@@ -272,7 +277,14 @@ function Session({
           return;
         }
         renderer = created;
+        {
+          const { cols, rows } = created.size();
+          element.dataset.cols = String(cols);
+          setGrid({ cols, rows });
+          window.dispatchEvent(new CustomEvent("helix-bridge:grid", { detail: { threadId, cols, rows } }));
+        }
         editorFocus.current = () => created.focus();
+        if (activeRef.current) editorFocusers.set(threadId, () => created.focus());
         setDiagnostics(created.diagnostics());
         removeDiagnostics = created.onDiagnostics(() => !disposed && setDiagnostics(created.diagnostics()));
         // With the HUD on, drivers can also read the screen (status line included).
@@ -367,16 +379,33 @@ function Session({
   // Cmd shortcuts (app.tsx): show or hide the tree, move focus between panes.
   const controls = useRef({ toggleTree: () => {}, switchFocus: () => {} });
   controls.current = {
+    // The rail's Files tab (the tree); a sheet when bb's sidebar is hidden.
     toggleTree: () => {
-      if (!tree) return;
-      if (showTree) setTreeVisible(false);
-      else {
-        setTreeVisible(true);
-        window.setTimeout(() => treeHandle.current?.focus(), 300);
+      if (tree) {
+        if (showTree) setTreeVisible(false);
+        else {
+          setTreeVisible(true);
+          window.setTimeout(() => treeHandle.current?.focus(), 300);
+        }
+        return;
       }
+      if (railSheet.get() === threadId) {
+        railSheet.set(null);
+        editorFocus.current?.();
+        return;
+      }
+      railTab.set("files");
+      if (sidebarRailVisible(threadId)) window.setTimeout(() => railFocus.get(threadId)?.(), 0);
+      else railSheet.set(threadId);
     },
+    // Between Helix and the rail (or its sheet).
     switchFocus: () => {
       if (showTree && !treeHandle.current?.focused()) treeHandle.current?.focus();
+      else if (!tree && railHasFocus.get(threadId)?.()) {
+        if (railSheet.get() === threadId) railSheet.set(null);
+        editorFocus.current?.();
+      } else if (!tree && sidebarRailVisible(threadId) && railFocus.get(threadId)?.()) return;
+      else if (!tree) railSheet.set(threadId);
       else editorFocus.current?.();
     },
   };
@@ -483,12 +512,12 @@ function Session({
           {diagnostics.familyInstalled ? `${diagnostics.requested} did not load` : `${config.fontFamily} is not installed on this computer`}; the editor draws with {diagnostics.font || "a fallback font"}. Install it here (the computer running bb), or set the plugin's font setting.
         </p>
       ) : null}
-      {config.hud && hud ? <Hud snapshot={hud} diagnostics={diagnostics} /> : null}
+      {config.hud && hud ? <Hud snapshot={hud} diagnostics={diagnostics} grid={grid} /> : null}
     </div>
   );
 }
 
-function Hud({ snapshot, diagnostics }: { snapshot: HudSnapshot; diagnostics: RendererDiagnostics | null }) {
+function Hud({ snapshot, diagnostics, grid }: { snapshot: HudSnapshot; diagnostics: RendererDiagnostics | null; grid: { cols: number; rows: number } | null }) {
   const renderer = diagnostics?.renderer ?? "?";
   const ms = (v: number | null) => (v === null ? "-" : `${v} ms`);
   return (
@@ -503,6 +532,8 @@ function Hud({ snapshot, diagnostics }: { snapshot: HudSnapshot; diagnostics: Re
       <span className="max-w-56 truncate text-foreground">
         {diagnostics ? `${diagnostics.font} (${diagnostics.weight})${diagnostics.requestedLoaded ? "" : ", not the requested face"}` : "-"}
       </span>
+      <span>Columns</span>
+      <span className={cn("text-foreground", grid && grid.cols < 80 && "text-destructive")}>{grid ? `${grid.cols} x ${grid.rows}` : "-"}</span>
       <span>Pixel ratio</span>
       <span className="text-foreground">{diagnostics ? `${diagnostics.dpr}x, cell ${diagnostics.cell.width}x${diagnostics.cell.height} device px` : "-"}</span>
       <span>Key to paint</span>

@@ -5,10 +5,10 @@
 // is active, and lists every hunk as the `review` locations list so
 // `:bb-next` walks the whole review.
 //
-// Targets: uncommitted (against HEAD), branch (against where it forked from
-// the environment's base branch), pr (the same for the thread's pull
-// request), turn (what the last agent turn changed, against the snapshot it
-// started from), commit <sha> (against its parent), off.
+// Targets (the rail's scopes): uncommitted (against HEAD), branch (against
+// where it forked from the environment's base branch), pr (the same for the
+// thread's pull request), commit <sha> (against its parent), off. "What
+// changed since I looked" is bb's viewed marks (the rail), not a snapshot.
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -22,12 +22,12 @@ import type { HelixService } from "./service";
 type Sdk = BbPluginApi["sdk"];
 
 const DEBOUNCE_MS = 700;
-/** A turn snapshot slower than this is worth telling the owner about, once. */
-const SLOW_SNAPSHOT_MS = 1000;
 const MAX_FILES = 5000;
 const MAX_HUNKS = 2000;
 
-export type ReviewTarget = { kind: "uncommitted" } | { kind: "branch" } | { kind: "pr" } | { kind: "turn" } | { kind: "commit"; rev: string } | { kind: "off" };
+export type ReviewTarget = { kind: "uncommitted" } | { kind: "branch" } | { kind: "pr" } | { kind: "commit"; rev: string } | { kind: "off" };
+/** A review's scope as the rail shows it. */
+export type ReviewScope = "uncommitted" | "branch" | "pr" | "commit";
 
 /** What the user typed after `:bb-review`, or an agent's target. */
 export function parseTarget(text: string): ReviewTarget | { error: string } {
@@ -40,8 +40,6 @@ export function parseTarget(text: string): ReviewTarget | { error: string } {
       return { kind: "branch" };
     case "pr":
       return { kind: "pr" };
-    case "turn":
-      return { kind: "turn" };
     case "off":
       return { kind: "off" };
     case "commit": {
@@ -52,7 +50,7 @@ export function parseTarget(text: string): ReviewTarget | { error: string } {
     default:
       // A bare sha is a commit.
       if (/^[0-9a-f]{7,40}$/u.test(word) && rest.length === 0) return { kind: "commit", rev: word };
-      return { error: `unknown review target "${word}": uncommitted, branch, pr, turn, commit <sha> or off` };
+      return { error: `unknown review target "${word}": uncommitted, branch, pr, commit <sha> or off` };
   }
 }
 
@@ -62,6 +60,9 @@ export interface ReviewFile {
   oldPath?: string;
   additions: number;
   deletions: number;
+  /** bb's Git revision of the file (`<oldMode>:<oldBlob>:<newMode>:<newBlob>`), for viewed marks and patches. */
+  revision?: string;
+  binary?: boolean;
 }
 
 export interface Resolved {
@@ -69,6 +70,12 @@ export interface Resolved {
   base: string | null;
   files: ReviewFile[];
   hunks: LocationItem[];
+  /** The bb Git target the files came from (viewed marks and patches use it). */
+  gitTarget: Record<string, string>;
+  /** bb's Git listed only part of the files. */
+  truncated: boolean;
+  /** The commit, for a commit review. */
+  sha?: string;
 }
 
 export interface ActiveReview {
@@ -84,25 +91,26 @@ export interface ActiveReview {
   deletions: number;
   digest: string;
   startedAt: number;
+  /** The last listing, for the rail (no git read of its own). */
+  resolved: Resolved;
 }
 
 export interface ReviewDeps {
   sdk(): Sdk;
   service: HelixService;
-  gitRead(hostId: string, input: { cwd: string; op: "revParse" | "subject" | "snapshot" | "changedFiles" | "diff"; rev?: string; exclude?: string[] }): Promise<{ sha?: string | null; subject?: string; base?: string | null; untracked?: string[]; files?: ReviewFile[]; diff?: string; error: string | null }>;
+  gitRead(hostId: string, input: { cwd: string; op: "revParse" | "subject"; rev?: string }): Promise<{ sha?: string | null; subject?: string; error: string | null }>;
   /** A review started, changed or ended (the app reads reviewState again). */
   changed(threadId: string | null): void;
   /** Every git read a review makes, for the plugin log (bb plugin logs helix-bridge). */
   trace?(message: string): void;
-  /** The `reviewTurnSnapshots` setting: snapshot the working tree at each turn start. */
-  turnSnapshots(): Promise<boolean>;
   log(message: string): void;
 }
 
 const filesSchema = z
   .object({
     outcome: z.string(),
-    files: z.array(z.object({ path: z.string(), previousPath: z.string().nullable(), changeKind: z.string(), additions: z.number(), deletions: z.number() }).passthrough()).optional(),
+    files: z.array(z.object({ path: z.string(), previousPath: z.string().nullable(), changeKind: z.string(), additions: z.number(), deletions: z.number(), revision: z.string().optional(), binary: z.boolean().optional() }).passthrough()).optional(),
+    truncated: z.boolean().optional(),
     mergeBaseRef: z.string().nullable().optional(),
     reason: z.string().optional(),
   })
@@ -133,11 +141,7 @@ export class Reviews {
   private readonly active = new Map<string, ActiveReview>();
   /** Per Helix: each reviewed file's first changed line (absolute path → line). */
   private readonly firstChanges = new Map<string, Map<string, number>>();
-  /** Per thread: the snapshot its last agent turn started from. */
-  private readonly turnStarts = new Map<string, { base: string | null; untracked: string[]; at: number }>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** The first snapshot that took longer than SLOW_SNAPSHOT_MS (for bb hx doctor). */
-  slowSnapshot: { ms: number; root: string } | null = null;
 
   constructor(private readonly deps: ReviewDeps) {}
 
@@ -153,23 +157,6 @@ export class Reviews {
   /** Where this file's first change is in the active review, if it has one. */
   firstChange(key: string, path: string): number | null {
     return this.firstChanges.get(key)?.get(path) ?? null;
-  }
-
-  // ----- turns --------------------------------------------------------------
-
-  /** An agent turn starts: remember the working tree it starts from (`turn`). */
-  async onTurnStart(threadId: string, hostId: string | null, root: string | null): Promise<void> {
-    // `git stash create` walks the working tree: only when the owner asked for it.
-    if (!hostId || !root || !(await this.deps.turnSnapshots())) return;
-    const started = Date.now();
-    this.deps.trace?.(`git read: host snapshot in ${root}`);
-    const snap = await this.deps.gitRead(hostId, { cwd: root, op: "snapshot" }).catch(() => null);
-    const ms = Date.now() - started;
-    if (ms > SLOW_SNAPSHOT_MS && !this.slowSnapshot) {
-      this.slowSnapshot = { ms, root };
-      this.deps.log(`a turn snapshot for review took ${ms} ms in ${root}; turn reviews cost that at every agent turn (setting reviewTurnSnapshots)`);
-    }
-    if (snap && !snap.error) this.turnStarts.set(threadId, { base: snap.base ?? null, untracked: snap.untracked ?? [], at: Date.now() });
   }
 
   // ----- resolving ----------------------------------------------------------
@@ -189,24 +176,32 @@ export class Reviews {
   }
 
   private filesFrom(result: z.infer<typeof filesSchema>): ReviewFile[] {
-    return (result.files ?? []).map((f) => ({ path: f.path, status: statusOf(f.changeKind), ...(f.previousPath ? { oldPath: f.previousPath } : {}), additions: f.additions, deletions: f.deletions }));
+    return (result.files ?? []).map((f) => ({
+      path: f.path,
+      status: statusOf(f.changeKind),
+      ...(f.previousPath ? { oldPath: f.previousPath } : {}),
+      additions: f.additions,
+      deletions: f.deletions,
+      ...(f.revision ? { revision: f.revision } : {}),
+      ...(f.binary ? { binary: true } : {}),
+    }));
   }
 
   async resolve(instance: BoundInstance, target: Exclude<ReviewTarget, { kind: "off" }>): Promise<Resolved> {
     const environmentId = instance.environmentId;
     const root = instance.environmentPath;
     if (!environmentId || !root) throw new BridgeFailure("unsupported", "this Helix is not in a bb environment");
-    const git = async (op: "revParse" | "subject" | "snapshot" | "changedFiles" | "diff", rev?: string, exclude?: string[]) => {
+    const git = async (op: "revParse" | "subject", rev?: string) => {
       this.deps.trace?.(`git read: host ${op}${rev ? ` ${rev}` : ""} in ${root}`);
-      const result = await this.deps.gitRead(instance.hostId, { cwd: root, op, ...(rev ? { rev } : {}), ...(exclude ? { exclude } : {}) });
+      const result = await this.deps.gitRead(instance.hostId, { cwd: root, op, ...(rev ? { rev } : {}) });
       if (result.error) throw new BridgeFailure("unsupported", result.error);
       return result;
     };
     switch (target.kind) {
       case "uncommitted": {
         const t = { type: "uncommitted" };
-        const files = this.filesFrom(await this.bbGitFiles(environmentId, t));
-        return { title: "Uncommitted changes", base: null, files, hunks: await this.bbGitHunks(environmentId, t, root) };
+        const result = await this.bbGitFiles(environmentId, t);
+        return { title: "Uncommitted changes", base: null, files: this.filesFrom(result), hunks: await this.bbGitHunks(environmentId, t, root), gitTarget: t, truncated: result.truncated === true };
       }
       case "branch":
       case "pr": {
@@ -223,12 +218,12 @@ export class Reviews {
           const status = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "workspaceStatus", input: { environmentId }, outputSchema: statusSchema });
           against = status.workspace?.branch?.defaultBranch ?? "main";
           const current = status.workspace?.branch?.currentBranch ?? null;
-          title = current && current !== against ? `This branch (${current}) against ${against}` : `Changes against ${against}`;
+          title = current && current !== against ? `${current} against ${against}` : `Changes against ${against}`;
         }
         const t = { type: "all", mergeBaseBranch: against };
         const result = await this.bbGitFiles(environmentId, t);
         if (!result.mergeBaseRef) throw new BridgeFailure("not_found", `no merge base with ${against}`);
-        return { title, base: result.mergeBaseRef, files: this.filesFrom(result), hunks: await this.bbGitHunks(environmentId, t, root) };
+        return { title, base: result.mergeBaseRef, files: this.filesFrom(result), hunks: await this.bbGitHunks(environmentId, t, root), gitTarget: t, truncated: result.truncated === true };
       }
       case "commit": {
         const sha = (await git("revParse", target.rev)).sha;
@@ -237,18 +232,8 @@ export class Reviews {
         if (!parent) throw new BridgeFailure("unsupported", `${sha.slice(0, 7)} has no parent to compare with`);
         const subject = (await git("subject", sha)).subject ?? "";
         const t = { type: "commit", sha };
-        const files = this.filesFrom(await this.bbGitFiles(environmentId, t));
-        return { title: `Commit ${sha.slice(0, 7)}${subject ? `: ${subject}` : ""}`, base: parent, files, hunks: await this.bbGitHunks(environmentId, t, root) };
-      }
-      case "turn": {
-        if (!(await this.deps.turnSnapshots())) throw new BridgeFailure("unsupported", "turn review needs the reviewTurnSnapshots setting (bb plugin config helix-bridge set reviewTurnSnapshots true); it snapshots the working tree at each agent turn");
-        const start = instance.threadId ? this.turnStarts.get(instance.threadId) : undefined;
-        if (!start?.base) throw new BridgeFailure("not_found", "no agent turn recorded for this thread since turn snapshots were turned on; try uncommitted or branch");
-        const files = ((await git("changedFiles", start.base, start.untracked)).files ?? []) as ReviewFile[];
-        const hunks = diffHunks((await git("diff", start.base)).diff ?? "", root).map((h) => h.item);
-        // New files the turn created are not in a diff against a commit.
-        for (const f of files) if (f.status === "added" && !hunks.some((h) => h.path === join(root, f.path))) hunks.push({ path: join(root, f.path), line: 1, ...(f.additions > 0 ? { endLine: f.additions } : {}), label: `+${f.additions} new file` });
-        return { title: "The last agent turn", base: start.base, files, hunks };
+        const result = await this.bbGitFiles(environmentId, t);
+        return { title: `Commit ${sha.slice(0, 7)}${subject ? `: ${subject}` : ""}`, base: parent, files: this.filesFrom(result), hunks: await this.bbGitHunks(environmentId, t, root), gitTarget: t, truncated: result.truncated === true, sha };
       }
     }
   }
@@ -278,12 +263,13 @@ export class Reviews {
       deletions: resolved.files.reduce((n, f) => n + f.deletions, 0),
       digest: digestOf(resolved),
       startedAt: Date.now(),
+      resolved,
     };
     this.active.set(instance.key, review);
     this.firstChanges.set(instance.key, firstChangesOf(resolved));
     this.deps.changed(review.threadId);
     if (resolved.files.length === 0) return `${resolved.title}: no changes yet (the review follows new ones)`;
-    return `Reviewing ${resolved.title}: ${resolved.files.length} file${resolved.files.length === 1 ? "" : "s"}, +${review.additions} -${review.deletions} (:bb-review to browse, :bb-next to walk)`;
+    return `Reviewing ${resolved.title}: ${resolved.files.length} file${resolved.files.length === 1 ? "" : "s"}, +${review.additions} -${review.deletions}`;
   }
 
   async end(instance: BoundInstance): Promise<string> {
@@ -296,15 +282,23 @@ export class Reviews {
     return review ? `Review ended: ${review.title}` : "No review was active";
   }
 
-  private async send(instance: BoundInstance, id: string, resolved: Resolved, options: { activate: boolean; open?: boolean; interrupt?: "whenIdle" | "always" }): Promise<void> {
+  /** Turn the active review's inline diff on or off (the same id: nothing else moves). */
+  async setInline(instance: BoundInstance, inline: boolean): Promise<void> {
+    const review = this.active.get(instance.key);
+    if (!review) throw new BridgeFailure("not_found", "no review is active");
+    await this.send(instance, review.id, review.resolved, { activate: false, inline });
+  }
+
+  private async send(instance: BoundInstance, id: string, resolved: Resolved, options: { activate: boolean; open?: boolean; inline?: boolean; interrupt?: "whenIdle" | "always" }): Promise<void> {
     const root = instance.environmentPath!;
     await this.deps.service.bridge.call(instance.key, "review/set", {
       id,
       title: resolved.title,
       base: resolved.base ? { rev: resolved.base } : null,
       files: resolved.files.slice(0, MAX_FILES).map((f) => ({ path: join(root, f.path), status: f.status, ...(f.oldPath ? { oldPath: join(root, f.oldPath) } : {}), additions: f.additions, deletions: f.deletions })),
-      // `inline` omitted: a new review turns the inline diff on, and the same
-      // id sent again leaves it as the user set it with :bb-diff.
+      // `inline` omitted unless asked: a new review turns the inline diff on,
+      // and the same id sent again leaves it as the user set it.
+      ...(options.inline !== undefined ? { inline: options.inline } : {}),
       open: options.open ?? false,
       ...(options.interrupt ? { interrupt: options.interrupt } : {}),
     });
@@ -356,6 +350,7 @@ export class Reviews {
         additions: resolved.files.reduce((n, f) => n + f.additions, 0),
         deletions: resolved.files.reduce((n, f) => n + f.deletions, 0),
         digest,
+        resolved,
       });
       this.firstChanges.set(key, firstChangesOf(resolved));
       this.deps.changed(review.threadId);
@@ -377,5 +372,5 @@ function firstChangesOf(resolved: Resolved): Map<string, number> {
 }
 
 function digestOf(resolved: Resolved): string {
-  return JSON.stringify([resolved.title, resolved.base, resolved.files, resolved.hunks.length, resolved.hunks.map((h) => `${h.path}:${h.line}:${h.label ?? ""}`)]);
+  return JSON.stringify([resolved.title, resolved.base, resolved.files, resolved.truncated, resolved.hunks.length, resolved.hunks.map((h) => `${h.path}:${h.line}:${h.label ?? ""}`)]);
 }

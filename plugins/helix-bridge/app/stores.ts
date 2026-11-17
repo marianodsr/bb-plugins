@@ -25,7 +25,7 @@ export const arrivals = store<ReadonlyMap<string, { summary: string; at: number 
 export const composerFocusRequest = store<{ threadId: string; at: number } | null>(null);
 
 /** What the palette asked for; the overlay has the hooks to do it. */
-export const commandRequest = store<{ kind: "open" | "reload" | "bind" | "review"; threadId: string; at: number } | null>(null);
+export const commandRequest = store<{ kind: "open" | "bind" | "review"; threadId: string; at: number } | null>(null);
 
 export function useArrival(threadId: string | null) {
   const map = useSyncExternalStore(arrivals.subscribe, arrivals.get);

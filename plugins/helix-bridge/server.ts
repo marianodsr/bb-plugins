@@ -27,7 +27,7 @@ import { MIGRATIONS, Store } from "./server/store";
 import { TOOL_NAMES, instructionsFor, registerTools } from "./server/tools";
 
 export { rpcContract } from "./server/contract";
-export type { AppInstance, Position } from "./server/contract";
+export type { AppInstance, ChangedFile, Position } from "./server/contract";
 export type { GhosttyConfig } from "./shared/host-contract";
 
 export const SKILL_NAME = "helix-bridge";
@@ -56,7 +56,6 @@ export default async function plugin(bb: BbPluginApi) {
     toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
     toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
     toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
-    reviewTurnSnapshots: { type: "boolean", label: "Review the last agent turn", description: "Snapshot the working tree when each agent turn starts, so :bb-review turn can show what that turn changed. Off by default: in a large repository the snapshot (git stash create) walks the working tree at every turn.", default: false },
     treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
@@ -167,7 +166,6 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     service,
     gitRead: async (hostId, input) => (await hostCall("gitRead", input as Record<string, unknown>, { hostId, timeoutMs: 20_000 })) as Awaited<ReturnType<ReviewDeps["gitRead"]>>,
-    turnSnapshots: async () => (await settings.get()).reviewTurnSnapshots,
     trace: (message) => bb.log.info(message),
     changed: (threadId) => {
       if (threadId) bb.rpc.experimental_invalidate([tags.review(threadId)]);
@@ -175,6 +173,30 @@ export default async function plugin(bb: BbPluginApi) {
     },
     log: (message) => bb.log.warn(message),
   });
+
+  /** Why the last review a thread asked for could not start, for the rail. */
+  const reviewErrors = new Map<string, string>();
+  const viewedSchema = z.object({ files: z.array(z.object({ path: z.string(), revision: z.string() })) }).passthrough();
+  const patchesSchema = z.record(
+    z.string(),
+    z.object({ outcome: z.string(), patch: z.object({ patch: z.string(), truncated: z.boolean() }).optional(), message: z.string().optional(), failure: z.object({ message: z.string() }).passthrough().optional() }).passthrough(),
+  );
+  const prSchema = z.record(z.string(), z.object({ outcome: z.string(), pullRequest: z.object({ number: z.number() }).passthrough().optional() }).passthrough());
+  /** The environment's pull request number, from bb's GitHub plugin (its own cache), or null. */
+  async function pullRequestOf(environmentId: string): Promise<number | null> {
+    const prs = await bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "pullRequests", input: { keys: [environmentId] }, outputSchema: prSchema });
+    const pr = prs[environmentId];
+    return pr?.outcome === "available" && pr.pullRequest ? pr.pullRequest.number : null;
+  }
+  /** The first scope: the branch when it has commits of its own, else the uncommitted changes. */
+  async function autoTarget(environmentId: string | null): Promise<string> {
+    if (!environmentId) return "uncommitted";
+    const status = await bb.sdk.plugins
+      .callRpc({ pluginId: "bb--git", method: "workspaceStatus", input: { environmentId }, outputSchema: z.object({ workspace: z.object({ branch: z.object({ currentBranch: z.string().nullable().optional(), defaultBranch: z.string().nullable().optional() }).passthrough().optional() }).passthrough().optional() }).passthrough() })
+      .catch(() => null);
+    const branch = status?.workspace?.branch;
+    return branch?.currentBranch && branch.defaultBranch && branch.currentBranch !== branch.defaultBranch ? "branch" : "uncommitted";
+  }
 
   const follower = new Follower({
     sdk: () => bb.sdk,
@@ -299,10 +321,101 @@ export default async function plugin(bb: BbPluginApi) {
         openComments,
       };
     },
+    changes: async ({ threadId }) => {
+      const instance = (await service.instancesForThread(threadId))[0] ?? null;
+      const capable = Boolean(instance?.summary.capabilities.includes("review"));
+      const connected = instance?.summary.status === "connected";
+      const review = reviews.forThread(threadId);
+      const hasPullRequest = instance?.environmentId ? await pullRequestOf(instance.environmentId).then(Boolean, () => false) : false;
+      if (!review || !instance) return { capable, connected, review: null, error: reviewErrors.get(threadId) ?? null, hasPullRequest };
+      const resolved = review.resolved;
+      // bb's viewed marks: a file is viewed while its revision is the one marked.
+      const marks = await bb.sdk.plugins
+        .callRpc({ pluginId: "bb--git", method: "viewed", input: { environmentId: review.environmentId, target: resolved.gitTarget }, outputSchema: viewedSchema })
+        .then((r) => new Map(r.files.map((f) => [f.path, f.revision])), () => new Map<string, string>());
+      const state = await service.bridge.call<{ inline?: boolean }>(instance.key, "review/state", {}).catch(() => null);
+      return {
+        capable,
+        connected,
+        review: {
+          id: review.id,
+          title: review.title,
+          scope: review.target.kind === "commit" ? ("commit" as const) : (review.target.kind as "uncommitted" | "branch" | "pr"),
+          sha: resolved.sha ?? null,
+          files: resolved.files.map((f) => ({
+            path: f.path,
+            previousPath: f.oldPath ?? null,
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+            revision: f.revision ?? null,
+            binary: f.binary === true,
+            viewed: Boolean(f.revision && marks.get(f.path) === f.revision),
+          })),
+          truncated: resolved.truncated,
+          additions: review.additions,
+          deletions: review.deletions,
+          inline: typeof state?.inline === "boolean" ? state.inline : null,
+        },
+        error: null,
+        hasPullRequest,
+      };
+    },
+    setViewed: async ({ threadId, path, viewed }) => {
+      const review = reviews.forThread(threadId);
+      const file = review?.resolved.files.find((f) => f.path === path);
+      if (!review || !file?.revision) throw new Error("That file is not in the active review");
+      const input = { environmentId: review.environmentId, target: review.resolved.gitTarget, path };
+      if (viewed) await bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "markViewed", input: { ...input, revision: file.revision }, outputSchema: z.object({ ok: z.boolean() }).passthrough() });
+      else await bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "clearViewed", input, outputSchema: z.object({ ok: z.boolean() }).passthrough() });
+      bb.rpc.experimental_invalidate([tags.review(threadId)]);
+      return { ok: true };
+    },
+    filePatch: async ({ threadId, path, revision }) => {
+      const review = reviews.forThread(threadId);
+      if (!review) return { patch: null, truncated: false, message: "No review is active" };
+      // bb's Git plugin keys a patch by environment, target, whitespace, path and revision.
+      const key = JSON.stringify([review.environmentId, review.resolved.gitTarget, false, path, revision]);
+      bb.log.info(`git read: bb--git patches ${path} in ${review.environmentId}`);
+      const result = await bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "patches", input: { keys: [key] }, outputSchema: patchesSchema });
+      const entry = result[key];
+      if (entry?.outcome === "available" && entry.patch) return { patch: entry.patch.patch, truncated: entry.patch.truncated, message: null };
+      return { patch: null, truncated: false, message: entry?.failure?.message ?? entry?.message ?? "This file's diff is not available" };
+    },
+    openChange: async ({ threadId, path, line }) => {
+      const instance = (await service.instancesForThread(threadId))[0];
+      if (!instance) return { opened: false };
+      const at = line ?? reviews.firstChange(instance.key, service.absolute(instance, path));
+      await service.show(instance, { path, ...(at ? { line: at } : {}), interrupt: "always" });
+      return { opened: true };
+    },
+    setInline: async ({ threadId, inline }) => {
+      const instance = (await service.instancesForThread(threadId))[0];
+      if (!instance) throw new Error("No Helix is connected to this thread");
+      await reviews.setInline(instance, inline);
+      bb.rpc.experimental_invalidate([tags.review(threadId)]);
+      return { ok: true };
+    },
+    recentCommits: async ({ threadId }) => {
+      const info = await service.threadInfo(threadId);
+      if (!info.hostId || !info.path) return { commits: [] };
+      bb.log.info(`git read: host recentCommits in ${info.path}`);
+      const result = (await hostCall("gitRead", { cwd: info.path, op: "recentCommits" }, { hostId: info.hostId, timeoutMs: 20_000 })) as { commits?: { sha: string; subject: string; when: string }[] };
+      return { commits: result.commits ?? [] };
+    },
     startReview: async ({ threadId, target }) => {
       const instance = (await service.instancesForThread(threadId))[0];
       if (!instance) throw new Error("No Helix is connected to this thread");
-      return { message: await reviews.start(instance, target, { interrupt: "always" }) };
+      try {
+        const message = await reviews.start(instance, target === "auto" ? await autoTarget(instance.environmentId) : target, { interrupt: "always" });
+        reviewErrors.delete(threadId);
+        return { message };
+      } catch (error) {
+        // The rail shows why (a branch with no merge base, no pull request).
+        reviewErrors.set(threadId, error instanceof Error ? error.message : String(error));
+        bb.rpc.experimental_invalidate([tags.review(threadId)]);
+        throw error;
+      }
     },
     sendReviewComments: async ({ threadId }) => {
       const instance = (await service.instancesForThread(threadId))[0];
@@ -406,10 +519,6 @@ export default async function plugin(bb: BbPluginApi) {
     // A file chosen in the tree went to Helix: the app moves focus there.
     treeOpened: (threadId) => bb.realtime.publish("tree-open", { threadId, at: Date.now() }),
     review: (instance, target) => reviews.start(instance, target, { interrupt: "always" }),
-    notes: () =>
-      reviews.slowSnapshot
-        ? [`warn  Turn snapshots: one took ${reviews.slowSnapshot.ms} ms in ${reviews.slowSnapshot.root}, at every agent turn while reviewTurnSnapshots is on\n      fix: bb plugin config helix-bridge set reviewTurnSnapshots false (turn review then needs it back)`]
-        : [],
   });
   registerTools(bb, service, { review: (instance, target) => reviews.start(instance, target) });
 
@@ -519,10 +628,6 @@ export default async function plugin(bb: BbPluginApi) {
     setActive(thread.id, thread.environmentId ?? null, true);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     follower.onTurnStart(thread.id);
-    // The snapshot `:bb-review turn` compares with, where a Helix that can
-    // review serves this environment.
-    const reviewable = bridge.list().some((i) => i.summary.status === "connected" && i.environmentId === thread.environmentId && i.summary.capabilities.includes("review"));
-    if (reviewable) void service.threadInfo(thread.id).then((info) => reviews.onTurnStart(thread.id, info.hostId, info.path)).catch(() => {});
   });
   bb.events.on("thread.idle", ({ thread }) => {
     setActive(thread.id, thread.environmentId ?? null, false);

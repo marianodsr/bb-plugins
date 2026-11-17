@@ -39,6 +39,18 @@ export const appInstanceSchema = z.object({
 });
 export type AppInstance = z.infer<typeof appInstanceSchema>;
 
+export const changedFileSchema = z.object({
+  path: z.string(),
+  previousPath: z.string().nullable(),
+  status: z.enum(["added", "modified", "deleted", "renamed"]),
+  additions: z.number(),
+  deletions: z.number(),
+  revision: z.string().nullable(),
+  binary: z.boolean(),
+  viewed: z.boolean(),
+});
+export type ChangedFile = z.infer<typeof changedFileSchema>;
+
 export const positionSchema = z.object({ key: z.string(), threadId: z.string().nullable(), path: z.string().nullable(), absolutePath: z.string().nullable(), line: z.number().nullable(), col: z.number().nullable(), endLine: z.number().nullable(), mode: z.string().nullable() });
 export type Position = z.infer<typeof positionSchema>;
 
@@ -67,8 +79,57 @@ export const rpcContract = defineRpcContract({
     }),
     tags: ({ threadId }) => [tags.review(threadId), tags.instances],
   },
+  changes: {
+    experimental_description: "The rail's Changes tab: the review active in the thread's Helix, its files with bb's viewed marks, and whether the thread has a pull request.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({
+      capable: z.boolean(),
+      connected: z.boolean(),
+      review: z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          scope: z.enum(["uncommitted", "branch", "pr", "commit"]),
+          sha: z.string().nullable(),
+          files: z.array(changedFileSchema),
+          truncated: z.boolean(),
+          additions: z.number(),
+          deletions: z.number(),
+          inline: z.boolean().nullable(),
+        })
+        .nullable(),
+      error: z.string().nullable(),
+      hasPullRequest: z.boolean(),
+    }),
+    tags: ({ threadId }) => [tags.review(threadId), tags.instances],
+  },
+  setViewed: {
+    experimental_description: "Mark a file of the active review viewed (bb's Git viewed mark at its current revision) or not.",
+    input: z.object({ threadId: id, path: z.string().min(1).max(4096), viewed: z.boolean() }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  filePatch: {
+    experimental_description: "One file's patch in the active review, from bb's Git plugin, for the rail's flyout.",
+    input: z.object({ threadId: id, path: z.string().min(1).max(4096), revision: z.string().min(1).max(1024) }).strict(),
+    output: z.object({ patch: z.string().nullable(), truncated: z.boolean(), message: z.string().nullable() }),
+  },
+  openChange: {
+    experimental_description: "Show a reviewed file in the thread's Helix at a line, or at its first change, and give Helix focus.",
+    input: z.object({ threadId: id, path: z.string().min(1).max(4096), line: z.number().int().min(1).optional() }).strict(),
+    output: z.object({ opened: z.boolean() }),
+  },
+  setInline: {
+    experimental_description: "Turn the active review's inline diff in Helix on or off.",
+    input: z.object({ threadId: id, inline: z.boolean() }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  recentCommits: {
+    experimental_description: "The last commits on the thread's branch, for the rail's Commit scope (read when that scope opens).",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ commits: z.array(z.object({ sha: z.string(), subject: z.string(), when: z.string() })) }),
+  },
   startReview: {
-    experimental_description: "Start a review in the thread's Helix: uncommitted, branch, pr, turn, commit <sha>, or off to end it.",
+    experimental_description: "Start a review in the thread's Helix: auto (the branch when it has its own commits, else uncommitted), uncommitted, branch, pr, commit <sha>, or off to end it.",
     input: z.object({ threadId: id, target: z.string().max(240) }).strict(),
     output: z.object({ message: z.string() }),
   },

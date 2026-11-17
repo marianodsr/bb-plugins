@@ -359,3 +359,63 @@ conservatively. Newest last.
     again; the 4 s timer is gone. The annotations' 30 s poll is gone (Review
     Editor notifies every write). What remains on timers reads no
     repository: the registry rescan (5 s) and the reconcile (30 s).
+
+## Second pass: the rail (docs/HELIX_REVIEW.md, AUDIT.md)
+
+60. **The rail lives in bb's sidebar** (navPanel `experimental_sidebar`), not
+    in the page. At 1440 px with bb's sidebar and the chat open the page body
+    is 560 px; a 260 px rail inside it left Helix 29 columns. In the sidebar
+    the page is all Helix (56 columns with the chat open, 112 with it
+    closed), and the rail gets bb's resize and collapse. Escape inside it is
+    "back to Helix" (bb's own Escape is "Back to app"); a rail in bb's
+    collapsed sidebar or closed drawer (compact windows keep it mounted and
+    `inert`) draws nothing, and ⇧⌘H, ⇧⌘Y and `space e` open the same rail as
+    a sheet over the editor. Only one rail is mounted at a time, so one yazi
+    session never has two surfaces.
+61. **The chat closes on the first visit when Helix would get fewer than 80
+    columns** with it open, decided once Helix has drawn (its real column
+    count). From then on the panel's state is the owner's, remembered per
+    window class (narrow < 1100 px, medium < 1700 px, wide). No API sets the
+    panel's width, so closing it is the only lever.
+62. **"Comments", not "Notes"**: Review Editor, `:bb-comment` and Send to
+    thread already say comments; a second word for the same thing is what
+    the audit marks as inconsistent.
+63. **Opening the Changes tab starts the review** (`auto`: the branch when
+    the current branch is not the default one, else uncommitted). There is
+    nothing to confirm; the review dialog is gone, and the palette's "Helix:
+    review changes" opens the page on Changes.
+64. **The `turn` target and its setting are gone.** bb's viewed marks answer
+    "what changed since I looked": a mark holds a file's revision, so a file
+    the agent touches comes back unviewed by itself, with no snapshot and no
+    git per turn. The host's git shrinks to revision, subject and recent
+    commits (the Commit scope, read when it opens).
+65. **The rail reads the review the server already keeps** (the same
+    bb--git files and diff Helix's review uses, refreshed on signals only),
+    plus bb's viewed marks for it. Patches come from bb's `patches` by
+    `[environment, target, ignoreWhitespace, path, revision]`, fetched when
+    the cursor rests on a row for 140 ms and kept per revision, so holding
+    `j` costs nothing and a file is fetched again only when it changes.
+66. **bb's Git plugin lists at most 500 files.** Past that the rail says the
+    list is cut short and suggests a narrower scope; Helix's review gets the
+    same 500. Listing more would need our own git listing and our own
+    revisions for viewed marks; not worth it for now. Past 300 files the
+    folders start collapsed; the list is virtualised (28 px rows).
+67. **The flyout lies over Helix**, right of the rail, full height of the
+    editor: there is no room beside Helix at 1440 px with the chat open. On
+    a page 1200 px or wider it takes 60% of the room (at most 760 px) so
+    Helix stays visible; with less than 360 px beside the rail (the sheet on
+    a compact window) it covers the page as a peek. It shows while the list
+    has focus and leaves when focus does. Each change's line is a button
+    that opens Helix there; a deleted file's diff is its old text, so Enter
+    keeps the flyout instead of opening nothing.
+68. **The rail's tabs are a quiet underlined row**, so the Changes tab's
+    scope control (the segmented control) reads as the stronger choice
+    beneath it; two stacked segmented controls read as equals.
+69. **`j`/`k` stop on files** and on closed folders only, so skimming never
+    lands on a folder header and drops the flyout. Files at the workspace
+    root come first, without a folder row.
+70. **The page header shows where Helix is** (file:line, diagnostics); the
+    thread chip and the switcher to other editors moved to the top of the
+    rail, the tree toggle to ⇧⌘Y and the rail itself.
+71. **Palette "Helix: reload buffers changed on disk" is gone**: a Helix
+    with `watch` reloads by itself; `bb hx reload` remains for the rare case.

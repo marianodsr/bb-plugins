@@ -61,8 +61,8 @@ async function teardown() {
 }
 
 let capabilities: string[] | null = null;
-/** gitRead snapshots the fake host took (turn reviews). */
-let snapshots = 0;
+/** Git reads made through the fake host or bb's Git plugin. */
+let gitReads = 0;
 /** Settings for the next setup() (the agent tools are off by default). */
 let extraSettings: Record<string, string | number | boolean> = {};
 const ALL_TOOLS_ON = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true, toolEdit: true, toolPanes: true, toolCommand: true };
@@ -117,13 +117,10 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
         case "gitRead": {
           // The host's read-only git, run here.
           const cwd = String(args.cwd);
+          gitReads += 1;
           const rev = args.rev as string | undefined;
           if (args.op === "revParse") return { sha: rev ? await gitRevParse(cwd, rev) : null, error: null };
           if (args.op === "subject") return { subject: rev ? await gitSubject(cwd, rev) : "", error: null };
-          if (args.op === "snapshot") {
-            snapshots += 1;
-            return { base: await gitRevParse(cwd, "HEAD"), untracked: [], error: null };
-          }
           throw new Error(`unexpected gitRead ${String(args.op)}`);
         }
         default:
@@ -218,14 +215,23 @@ describe("reviews in the editor", () => {
   const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const parent = execFileSync("git", ["rev-parse", "HEAD^"], { encoding: "utf8" }).trim();
   const base = "a".repeat(40);
-  let files: { path: string; previousPath: string | null; changeKind: string; additions: number; deletions: number }[] = [];
+  let files: { path: string; previousPath: string | null; changeKind: string; additions: number; deletions: number; revision?: string }[] = [];
+  let viewedMarks: { path: string; revision: string }[] = [];
+  const gitCalls: { method: string; input: unknown }[] = [];
   const hunkDiff = (path: string) => [`--- a/${path}`, `+++ b/${path}`, "@@ -3,1 +3,1 @@", "-old", "+new"].join("\n");
   const reviewSetup = async (extra: Record<string, unknown> = {}) => {
     await teardown();
     await setup({ BB_THREAD_ID: "thr_term" }, {
       plugins: {
         list: async () => [{ id: "review-editor", status: "running" }],
-        callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: { target?: { type: string } } }) => {
+        callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: { target?: { type: string }; keys?: string[]; path?: string; revision?: string } }) => {
+          if (pluginId === "bb--git") {
+            gitReads += 1;
+            gitCalls.push({ method, input });
+          }
+          if (pluginId === "bb--git" && method === "viewed") return { files: viewedMarks };
+          if (pluginId === "bb--git" && (method === "markViewed" || method === "clearViewed")) return { ok: true };
+          if (pluginId === "bb--git" && method === "patches") return Object.fromEntries((input.keys ?? []).map((k) => [k, { outcome: "available", patch: { path: "main.go", patch: hunkDiff("main.go"), truncated: false } }]));
           if (pluginId === "bb--git" && method === "workspaceStatus") return { outcome: "available", workspace: { branch: { currentBranch: "feature", defaultBranch: "main" }, checkout: { headSha: head } } };
           if (pluginId === "bb--git" && method === "files") return { outcome: "available", files, mergeBaseRef: input.target?.type === "all" ? base : null, truncated: false, shortstat: "", initialPatches: [] };
           if (pluginId === "bb--git" && method === "diff") return { outcome: "available", diff: { diff: files.map((f) => hunkDiff(f.path)).join("\n"), truncated: false } };
@@ -247,9 +253,9 @@ describe("reviews in the editor", () => {
     await reviewSetup();
     mock.control({ cmd: "review", target: "branch" });
     await until(() => review()?.base === base);
-    expect(review()).toMatchObject({ title: "This branch (feature) against main", files: [{ path: join(workspace, "main.go"), status: "modified" }] });
+    expect(review()).toMatchObject({ title: "feature against main", files: [{ path: join(workspace, "main.go"), status: "modified" }] });
     expect(mock.control({ cmd: "state" }).lists).toMatchObject({ review: 1 });
-    await until(() => /Reviewing This branch \(feature\) against main: 1 file, \+2 -1/u.test(String((mock.control({ cmd: "state" }).status as { message?: string } | null)?.message ?? "")));
+    await until(() => /Reviewing feature against main: 1 file, \+2 -1/u.test(String((mock.control({ cmd: "state" }).status as { message?: string } | null)?.message ?? "")));
     // A file is added and saved in Helix: the same review grows, without a
     // new id. No timer: only signals (a save here) refresh it.
     const id = review()!.id;
@@ -277,33 +283,23 @@ describe("reviews in the editor", () => {
     expect(review()!.base).toBe(parent);
   });
 
-  it("snapshots the working tree at turn start only with reviewTurnSnapshots on", async () => {
+  it("reads no git when an agent turn starts or ends", async () => {
     await reviewSetup();
     const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
     fake.harness.sdk.stub("threads.events.list", async () => [] as never);
     fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
-    snapshots = 0;
+    gitReads = 0;
     await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
     await wait(300);
-    expect(snapshots).toBe(0);
     await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
-    extraSettings = { reviewTurnSnapshots: true };
-    try {
-      await reviewSetup();
-    } finally {
-      extraSettings = {};
-    }
-    fake.harness.sdk.stub("threads.events.list", async () => [] as never);
-    fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
-    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
-    await until(() => snapshots === 1);
-    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    await wait(300);
+    expect(gitReads).toBe(0);
   });
 
   it("says why a review cannot start", async () => {
     await reviewSetup();
     expect((await fake.harness.behavior.runCli(["review", "pr"], { threadId: "thr_term" })).stderr).toMatch(/this branch has no pull request/u);
-    expect((await fake.harness.behavior.runCli(["review", "turn"], { threadId: "thr_term" })).stderr).toMatch(/turn review needs the reviewTurnSnapshots setting/u);
+    expect((await fake.harness.behavior.runCli(["review", "turn"], { threadId: "thr_term" })).stderr).toMatch(/unknown review target "turn"/u);
     expect((await fake.harness.behavior.runCli(["review", "sideways"], { threadId: "thr_term" })).stderr).toMatch(/unknown review target "sideways"/u);
   });
 
@@ -320,6 +316,50 @@ describe("reviews in the editor", () => {
     expect((mock.control({ cmd: "state" }).state as { focused: { selections: { start: { line: number } }[] } }).focused.selections[0]!.start.line).toBe(3);
   });
 
+  it("gives the rail the review's files with bb's viewed marks, and marks them", async () => {
+    files = [
+      { path: "main.go", previousPath: null, changeKind: "modified", additions: 2, deletions: 1, revision: "100644:a:100644:b" },
+      { path: "util.go", previousPath: null, changeKind: "added", additions: 4, deletions: 0, revision: "000000:0:100644:c" },
+    ];
+    // util.go was viewed at an older revision: it counts as not viewed.
+    viewedMarks = [
+      { path: "main.go", revision: "100644:a:100644:b" },
+      { path: "util.go", revision: "000000:0:100644:old" },
+    ];
+    await reviewSetup();
+    expect(await fake.harness.behavior.callRpc("changes", { threadId: "thr_term" })).toMatchObject({ capable: true, connected: true, review: null });
+    // The first scope: the branch has commits of its own.
+    expect(await fake.harness.behavior.callRpc("startReview", { threadId: "thr_term", target: "auto" })).toMatchObject({ message: expect.stringMatching(/^Reviewing feature against main/u) });
+    const changes = (await fake.harness.behavior.callRpc("changes", { threadId: "thr_term" })) as { review: { scope: string; files: { path: string; viewed: boolean; revision: string | null }[] } };
+    expect(changes.review.scope).toBe("branch");
+    expect(changes.review.files.map((f) => [f.path, f.viewed])).toEqual([
+      ["main.go", true],
+      ["util.go", false],
+    ]);
+    gitCalls.length = 0;
+    await fake.harness.behavior.callRpc("setViewed", { threadId: "thr_term", path: "util.go", viewed: true });
+    expect(gitCalls).toEqual([{ method: "markViewed", input: { environmentId: "env_test", target: { type: "all", mergeBaseBranch: "main" }, path: "util.go", revision: "000000:0:100644:c" } }]);
+    // bb's Git plugin keys a patch by environment, target, whitespace, path and revision.
+    gitCalls.length = 0;
+    const patch = (await fake.harness.behavior.callRpc("filePatch", { threadId: "thr_term", path: "main.go", revision: "100644:a:100644:b" })) as { patch: string | null };
+    expect(patch.patch).toContain("@@ -3,1 +3,1 @@");
+    expect((gitCalls[0]?.input as { keys: string[] }).keys).toEqual([JSON.stringify(["env_test", { type: "all", mergeBaseBranch: "main" }, false, "main.go", "100644:a:100644:b"])]);
+    viewedMarks = [];
+  });
+
+  it("opens a reviewed file at a line or its first change, and switches the inline diff", async () => {
+    files = [{ path: "util.go", previousPath: null, changeKind: "modified", additions: 1, deletions: 1, revision: "r1" }];
+    await reviewSetup();
+    await fake.harness.behavior.callRpc("startReview", { threadId: "thr_term", target: "uncommitted" });
+    await fake.harness.behavior.callRpc("openChange", { threadId: "thr_term", path: "util.go" });
+    const line = () => (mock.control({ cmd: "state" }).state as { focused: { selections: { start: { line: number } }[] } }).focused.selections[0]!.start.line;
+    await until(() => line() === 3);
+    await fake.harness.behavior.callRpc("openChange", { threadId: "thr_term", path: "util.go", line: 2 });
+    await until(() => line() === 2);
+    await fake.harness.behavior.callRpc("setInline", { threadId: "thr_term", inline: false });
+    expect((mock.control({ cmd: "state" }).review as { inline?: boolean }).inline).toBe(false);
+  });
+
   it("names the review when its comments go to the agent", async () => {
     files = [{ path: "main.go", previousPath: null, changeKind: "modified", additions: 2, deletions: 1 }];
     await reviewSetup();
@@ -327,7 +367,7 @@ describe("reviews in the editor", () => {
     await until(() => review()?.base === base);
     sent = [];
     expect(await fake.harness.behavior.callRpc("sendReviewComments", { threadId: "thr_term" })).toMatchObject({ message: expect.stringMatching(/Sent the comments/u) });
-    expect(sent[0]?.text).toBe("Review of This branch (feature) against main.\n\nCOMPILED PROMPT");
+    expect(sent[0]?.text).toBe("Review of feature against main.\n\nCOMPILED PROMPT");
   });
 });
 

@@ -10,7 +10,7 @@ import { experimental_defineHostEntry, type ExperimentalHostRpcContext } from "@
 import { hostContract, hostSignals } from "./shared/host-contract";
 import { readGhosttyConfig, resolveExecutable, resolveFaces, runDoctor } from "./host/doctor";
 import { prepareYazi, yaEmit } from "./host/yazi";
-import { changedFiles, diffText, revParse, snapshot, subject } from "./host/git";
+import { recentCommits, revParse, subject } from "./host/git";
 import { InstanceManager, defaultBridgeDir } from "./host/manager";
 
 type Context = ExperimentalHostRpcContext<typeof hostSignals>;
@@ -79,19 +79,15 @@ const entry = experimental_defineHostEntry({
       return runDoctor({ bridgeDir: current.bridgeDir, hxbPath, fontFamily, instances: current.list() });
     },
     perfMode: async ({ instanceId, mode }, context) => ({ found: await managerFor(null, context).setPerfMode(instanceId, mode) }),
-    gitRead: async ({ cwd, op, rev, exclude }) => {
+    gitRead: async ({ cwd, op, rev }) => {
       try {
         switch (op) {
           case "revParse":
             return { sha: rev ? await revParse(cwd, rev) : null, error: null };
           case "subject":
             return { subject: rev ? await subject(cwd, rev) : "", error: null };
-          case "snapshot":
-            return { ...(await snapshot(cwd)), error: null };
-          case "changedFiles":
-            return { files: rev ? await changedFiles(cwd, rev, exclude ?? []) : [], error: null };
-          case "diff":
-            return { diff: rev ? await diffText(cwd, rev) : "", error: null };
+          case "recentCommits":
+            return { commits: await recentCommits(cwd), error: null };
         }
       } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };

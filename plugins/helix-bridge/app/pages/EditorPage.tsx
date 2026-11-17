@@ -1,17 +1,20 @@
-// The editor page: `/plugins/helix-bridge/editor/<threadId>`. The editor
-// fills the page body; the thread's conversation is the page's fixed Chat tab
-// in bb's own side panel, so bb's split gives editor plus chat and hiding the
-// panel gives the editor the full width.
-import { useMemo } from "react";
-import { ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { Button } from "@/components/ui/button";
+// The editor page: `/plugins/helix-bridge/editor/<threadId>`. Helix fills the
+// page body; the rail (files, changes, comments) is bb's sidebar while the
+// page is open; the thread's conversation is the page's fixed Chat tab in
+// bb's side panel, so hiding the panel gives Helix the full width.
+import { useEffect, useState } from "react";
+import { experimental_useAppPanel as useAppPanel, experimental_usePanelTabs as usePanelTabs, ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { EmptyState, StatusDot, ThreadChip } from "../../kit";
+import { EmptyState, StatusDot } from "../../kit";
 import { useInstances, useThreadHelix, whereLabel } from "../data";
 import { composerFocusRequest } from "../stores";
-import { EditorSurface, surfaceControls } from "../surface/EditorSurface";
-import { ReviewControl } from "../review/ReviewParts";
+import { useRealtime } from "@get-bb/plugin-sdk/app";
+import { usePortalScopeProps } from "@/lib/portal-scope";
+import { Rail } from "../rail/Rail";
+import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, sidebarRailVisible, useRailSheet } from "../rail/railStore";
+import { EditorSurface } from "../surface/EditorSurface";
+import { ReviewBar } from "../review/ReviewBar";
 
 export const EDITOR_PANEL = "editor";
 
@@ -25,6 +28,7 @@ export function threadFromSubPath(subPath: string): string | null {
 export function EditorPage({ subPath }: { subPath: string }) {
   const threadId = threadFromSubPath(subPath);
   const navigate = useBbNavigate();
+  useEditorWidth(threadId);
   if (!threadId) return <PickThread />;
   // Helix closed: back to the thread, with its composer focused.
   const onClosed = () => {
@@ -32,10 +36,125 @@ export function EditorPage({ subPath }: { subPath: string }) {
     navigate.toThread(threadId);
   };
   // Keyed so switching threads mounts a fresh session.
-  return <EditorSurface key={threadId} threadId={threadId} active autoFocus tree onClosed={onClosed} />;
+  // The rail (files, changes, comments) lives in bb's sidebar: the page is all Helix.
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <ReviewBar threadId={threadId} />
+      <EditorSurface key={threadId} threadId={threadId} active autoFocus onClosed={onClosed} />
+      <RailSheet threadId={threadId} />
+    </div>
+  );
 }
 
-/** The page header: which thread, where Helix is, and a switcher. */
+/**
+ * The rail over the editor's left edge, when bb's sidebar is collapsed or a
+ * closed drawer (compact windows). Escape, a chosen file or ⇧⌘H closes it.
+ */
+function RailSheet({ threadId }: { threadId: string }) {
+  const open = useRailSheet() === threadId;
+  const portal = usePortalScopeProps();
+  // :bb-files with no rail on screen: the sheet, on Files.
+  useRealtime("files", (payload: unknown) => {
+    const request = payload as { threadId?: string; path?: string | null } | null;
+    if (request?.threadId !== threadId || sidebarRailVisible(threadId) || railSheet.get() === threadId) return;
+    railTab.set("files");
+    pendingTreeReveal.set({ threadId, path: request.path ?? null, focus: true, at: Date.now() });
+    railSheet.set(threadId);
+  });
+  useEffect(() => {
+    if (!open) return;
+    const timers = [0, 250, 700].map((delay) => window.setTimeout(() => railFocus.get(threadId)?.(), delay));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, [open, threadId]);
+  if (!open) return null;
+  const close = () => {
+    railSheet.set(null);
+    editorFocus.get(threadId)?.();
+  };
+  return (
+    <div {...portal} className="absolute inset-0 z-30 flex" data-helix-rail-sheet>
+      <div className="flex h-full w-[min(22rem,88%)] flex-col border-r border-border/60 bg-background pt-2 shadow-lg motion-safe:animate-[helix-flyout-in_200ms_cubic-bezier(0.22,1,0.36,1)]">
+        <Rail threadId={threadId} onLeave={() => railSheet.set(null)} />
+      </div>
+      <button type="button" aria-label="Close the rail" className="min-w-0 flex-1 cursor-default bg-transparent" onClick={close} tabIndex={-1} />
+    </div>
+  );
+}
+
+/** Helix needs this many columns to be comfortable. */
+const COMFORTABLE_COLUMNS = 80;
+/** On a first visit, how long after Helix's first frame the panel is still watched. */
+const SETTLE_FIRST_VISIT_MS = 3000;
+
+/** A window's width class: what the owner chose for the chat is remembered per class. */
+export function widthClass(width: number): "narrow" | "medium" | "wide" {
+  return width < 1100 ? "narrow" : width < 1700 ? "medium" : "wide";
+}
+
+/**
+ * The first time the editor opens in a width class, the chat panel closes when
+ * leaving it open would give Helix fewer than 80 columns. After that the
+ * owner's own choice (opening or closing the panel here) is kept per class.
+ */
+function useEditorWidth(threadId: string | null) {
+  const panel = useAppPanel();
+  const tabs = usePanelTabs();
+  // Nothing is remembered until the first decision for this visit is made.
+  const [decided, setDecided] = useState(false);
+  useEffect(() => {
+    if (!threadId) return;
+    setDecided(false);
+    const key = `helix-bridge.chat.${widthClass(window.innerWidth)}`;
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(key);
+    } catch {
+      // not remembered
+    }
+    if (stored === "closed") panel.close();
+    if (stored !== null) {
+      setDecided(true);
+      return;
+    }
+    // First visit in this class: decide from the columns Helix gets once it
+    // has drawn, and keep deciding for a moment, since bb may restore the
+    // panel after Helix's first frame.
+    let frame = 0;
+    const started = performance.now();
+    let drawnAt = 0;
+    const check = () => {
+      const now = performance.now();
+      const cols = Number(document.querySelector<HTMLElement>("[data-helix-terminal]")?.dataset.cols);
+      if (cols > 0) {
+        drawnAt ||= now;
+        if (cols < COMFORTABLE_COLUMNS && panel.getTabs().open) panel.close();
+      }
+      if ((drawnAt && now - drawnAt > SETTLE_FIRST_VISIT_MS) || now - started > 15_000) {
+        setDecided(true);
+        return;
+      }
+      frame = requestAnimationFrame(check);
+    };
+    check();
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
+  // From then on, what the owner does with the panel here is their choice for this width class.
+  const open = tabs.open;
+  useEffect(() => {
+    if (!threadId || !decided) return;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(`helix-bridge.chat.${widthClass(window.innerWidth)}`, open ? "open" : "closed");
+      } catch {
+        // not remembered
+      }
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [open, threadId, decided]);
+}
+
+/** The page header: where Helix is and what it reports. The thread and the other editors are at the top of the rail. */
 export function EditorHeader({ subPath }: { subPath: string }) {
   const threadId = threadFromSubPath(subPath);
   const { data, position } = useThreadHelix(threadId);
@@ -44,18 +163,6 @@ export function EditorHeader({ subPath }: { subPath: string }) {
   if (!threadId) return null;
   return (
     <div className="flex min-w-0 max-w-[min(60vw,48rem)] items-center gap-3 text-xs">
-      <Button
-        size="sm"
-        variant="ghost"
-        className="size-7 shrink-0 p-0"
-        aria-label="Show or hide the file tree (⌘⇧Y)"
-        onClick={() => surfaceControls.get(threadId)?.toggleTree()}
-        data-helix-tree-toggle
-      >
-        <Icon name="Folder" className="size-4" />
-      </Button>
-      <ThreadChip threadId={threadId} />
-      <ReviewControl threadId={threadId} />
       {instance ? (
         <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground" title={instance.status === "connected" ? "Helix is connected" : `Helix is ${instance.status}`}>
           <StatusDot status={instance.status === "connected" ? "running" : "failed"} />
@@ -64,34 +171,7 @@ export function EditorHeader({ subPath }: { subPath: string }) {
           {instance.diagnostics.warnings > 0 ? <span className="hidden shrink-0 tabular-nums sm:inline">{instance.diagnostics.warnings} warnings</span> : null}
         </span>
       ) : null}
-      <ThreadSwitcher current={threadId} />
     </div>
-  );
-}
-
-function ThreadSwitcher({ current }: { current: string }) {
-  const { data } = useInstances();
-  const navigate = useBbNavigate();
-  const others = useMemo(() => {
-    const seen = new Set<string>([current]);
-    return (data?.instances ?? []).filter((i) => i.threadId && !seen.has(i.threadId) && seen.add(i.threadId));
-  }, [data, current]);
-  if (others.length === 0) return null;
-  return (
-    <span className="flex items-center gap-1">
-      {others.slice(0, 3).map((i) => (
-        <Button
-          key={i.key}
-          size="sm"
-          variant="ghost"
-          className="h-7 max-w-40 px-2 text-xs"
-          aria-label={`Switch to the editor of ${i.threadTitle ?? i.threadId}`}
-          onClick={() => navigate.toPluginPanel(EDITOR_PANEL, { subPath: i.threadId! })}
-        >
-          <span className="truncate">{i.threadTitle ?? i.threadId}</span>
-        </Button>
-      ))}
-    </span>
   );
 }
 

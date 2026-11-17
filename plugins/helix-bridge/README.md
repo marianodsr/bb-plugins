@@ -40,24 +40,44 @@ none. The tools still exist for those who want them: settings `toolShow`,
 `toolCommand`, `toolEdit` (all off; `skills/helix-bridge/tools.md` covers
 them).
 
-## Reviews
+## The editor page
 
-`:bb-review <target>` in Helix, the review control on the editor page, or
-the palette ("Helix: review changes in the editor") compares the files with
-a base and draws the diff in Helix: `uncommitted`, `branch`, `pr`, `commit
-<sha>`, `off`; `turn` (what the last agent turn changed) needs the
-`reviewTurnSnapshots` setting, off by default, because it snapshots the
-working tree (`git stash create`) at every agent turn. An active review is
+Helix fills the page. bb's sidebar becomes the editor's rail while the page
+is open: the thread (and the other threads that have an editor) at the top,
+then three tabs:
+
+- **Files**: the yazi tree (`space e` in the owner's keys, or ⇧⌘Y). Enter
+  opens a file and hands the keyboard to Helix; Escape goes back to Helix.
+- **Changes**: the review. Opening it starts one in Helix (the branch when it
+  has commits of its own, else the uncommitted changes); the scope control
+  switches between Uncommitted, Branch, PR (when the thread has one) and
+  Commit (a recent commit). Files are grouped by folder with their size and
+  bb's own viewed marks, shared with bb's Diff tab: a file stops counting as
+  viewed when its content changes, so after the agent answers, the files it
+  touched come back by themselves. `j`/`k` skim with the diff in a flyout
+  (bb's diff viewer), Enter opens the file in Helix at its first change, `v`
+  marks it viewed and moves on, `u` shows only what is left, `?` lists the
+  keys. bb's Git plugin lists at most 500 files; the list says when it is
+  cut short.
+- **Comments**: your comments and the agent's replies.
+
+A quiet bar above Helix names the review, how much is viewed, its size, the
+inline diff switch and End review. ⇧⌘H moves between Helix and the rail.
+When bb's sidebar is collapsed, or on a compact window, the rail opens as a
+sheet over the editor.
+
+The first time the page opens at a window size, the chat panel closes if
+leaving it open would give Helix fewer than 80 columns; after that the
+panel stays as you leave it, per window size. The HUD (setting `hud`)
+shows Helix's columns.
+
+`:bb-review <target>` in Helix still works (`uncommitted`, `branch`, `pr`,
+`commit <sha>`, `off`; in Helix a target is one argument, so quote a commit:
+`:bb-review "commit HEAD~1"`, or give a bare sha). An active review is
 refreshed only when something happens: a save or a reload in Helix in that
 workspace, bb's environment-change event, the end of an agent turn, or
-asking for the same target again. Never on a timer.
-
-In Helix a target is one argument, so a commit is quoted or given as a bare
-sha: `:bb-review "commit HEAD~1"`, `:bb-review 55143f2`. Bare `:bb-review`
-lists the review's files; `:bb-next` walks every change and `:bb-diff`
-switches the inline diff. Review Editor's "Open in Helix" opens the file at
-its first change, starting an uncommitted review if none is active. Every git
-read a review makes is logged (`bb plugin logs helix-bridge`, "git read: …").
+asking for the same target again. Never on a timer. Every git read a review
+makes is logged (`bb plugin logs helix-bridge`, "git read: …").
 
 ## What runs in the background
 
@@ -69,12 +89,13 @@ timer or on every turn.
   touches the repository.
 - While an agent turn runs in a workspace a Helix serves, the plugin follows
   the turn's events from bb (no repository reads) and, per edit, shows that
-  file (a Helix with `watch` reloads by itself; an older one is asked to). The changes list at the end of the turn is
-  built from those edits and Helix's own reloads, with one read of each
+  file (a Helix with `watch` reloads by itself; an older one is asked to).
+  The changes list at the end of the turn is built from those edits and Helix's own reloads, with one read of each
   edited file through Helix; no git.
 - Git runs only for what you start: a review (`bb--git` files and diff, on
-  the signals above), `turn` snapshots if you turned them on (`bb hx doctor`
-  says so if one takes over a second), and `bb hx` commands you run.
+  the signals above; a file's patch when you rest on it in the Changes tab;
+  the recent commits when you open the Commit scope), and `bb hx` commands
+  you run.
 
 ## Keys in Helix
 

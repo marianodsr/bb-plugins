@@ -155,22 +155,18 @@ export const hostContract = defineRpcContract({
     output: z.object({ found: z.boolean() }),
   },
   gitRead: {
-    experimental_description: "Read-only git for reviews: resolve a revision, a commit's subject, the snapshot a turn starts from, files and diff against a base.",
+    experimental_description: "Read-only git for reviews the owner starts: resolve a revision, a commit's subject, the recent commits.",
     input: z
       .object({
         cwd: z.string().min(1).max(4096),
-        op: z.enum(["revParse", "subject", "snapshot", "changedFiles", "diff"]),
+        op: z.enum(["revParse", "subject", "recentCommits"]),
         rev: z.string().max(200).optional(),
-        exclude: z.array(z.string().max(4096)).max(20_000).optional(),
       })
       .strict(),
     output: z.object({
       sha: z.string().nullable().optional(),
       subject: z.string().optional(),
-      base: z.string().nullable().optional(),
-      untracked: z.array(z.string()).optional(),
-      files: z.array(z.object({ path: z.string(), oldPath: z.string().optional(), status: z.enum(["added", "modified", "deleted", "renamed"]), additions: z.number(), deletions: z.number() })).optional(),
-      diff: z.string().optional(),
+      commits: z.array(z.object({ sha: z.string(), subject: z.string(), when: z.string() })).optional(),
       error: z.string().nullable(),
     }),
   },

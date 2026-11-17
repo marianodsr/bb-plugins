@@ -11,6 +11,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { FromHelixReceipt, PositionAction, PositionChip } from "./app/composer/ComposerParts";
 import { HelixOverlay } from "./app/overlay/HelixOverlay";
+import { EditorRail } from "./app/rail/Rail";
 import { commandRequest } from "./app/stores";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
 import { surfaceControls, visibleSurfaces } from "./app/surface/EditorSurface";
@@ -31,6 +32,7 @@ export default definePluginApp((app) => {
     path: EDITOR_PANEL,
     component: EditorPage,
     headerContent: EditorHeader,
+    experimental_sidebar: EditorRail,
   });
 
   app.slots.experimental_tab({
@@ -89,14 +91,6 @@ export default definePluginApp((app) => {
     },
   });
   app.commands.register({
-    id: "reload",
-    title: "Helix: reload buffers changed on disk",
-    isAvailable: ({ threadId }) => threadId !== null,
-    run: ({ threadId }) => {
-      if (threadId) commandRequest.set({ kind: "reload", threadId, at: Date.now() });
-    },
-  });
-  app.commands.register({
     id: "focus-editor",
     title: "Helix: switch focus between the file tree and the editor",
     defaultShortcut: { key: "h", mod: true, shift: true },
@@ -116,7 +110,7 @@ export default definePluginApp((app) => {
   });
   app.commands.register({
     id: "review",
-    title: "Helix: review changes in the editor",
+    title: "Helix: review changes",
     isAvailable: ({ threadId }) => threadId !== null,
     run: ({ threadId }) => {
       if (threadId) commandRequest.set({ kind: "review", threadId, at: Date.now() });
