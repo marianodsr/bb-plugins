@@ -150,3 +150,30 @@ is 1.9 ms; with injections emptied it is still 26 ms; reverting upstream
 #15997 (the newest Go highlights change) does not help. The queries and the
 highlighter are upstream's (the fork's base is newer than 25.07); none of it
 is bridge code.
+
+## Integration pass on the merged fork (2026-11-17, hxb 25.07.1 77933ed2)
+
+All ten capabilities, policy `safe`, Kitty from `HELIX_KITTY_KEYBOARD=enabled`
+(Escape `CSI 27u`, Ctrl+i `CSI 105;5u`). Real agent turns in a thread of
+ours (Claude Code, scratch Go module), its Helix in the shipped surface.
+
+- Agent edits reached Helix 4 and 19 ms after bb recorded them; the reveal
+  played (removed line struck through, new text uncovered); with follow the
+  view moved to each edit, including a file that was not open (opened at
+  the edit); with follow off focus stayed and both panes animated; while
+  typing the jump was deferred ("bb wants to show util.go:4 (:bb-go)") and
+  `:bb-go` performed it; the end-of-turn list walked with `:bb-next`.
+- `:bb-comment` drew the sign and text at once; the agent's reply and the
+  "resolved" note appeared after its turn; acknowledging cleared it 405 ms
+  after the CLI call started; an open comment came back after a restart.
+- All 17 tool calls from the agent as expected, gopls answering queries and
+  the diagnostics of an unsaved edit; one `u` removed `helix_edit`'s edit.
+- Reload on focus (wterm sends `ESC [O`/`ESC [I`): clean buffers reload,
+  unsaved ones warn. Exits: `:q`, `:q!`, `:wq`, closing from bb go back to
+  the thread; `:cq` shows "Helix exited with code 1"; `kill -9` closes like a
+  clean exit (bb reports 0).
+- HUD, normal mode, load 3.5-4: TypeScript (server.ts) 16.2 / 18.6 ms
+  key-to-paint (8.0 / 10.3 to first output) at 53 columns, 15.9 / 18.8 at
+  106 columns; the 4,100-line Go file 15.5 / 17.3 (53 columns) and 14.4 /
+  19.0 (106). Without a browser at 140x47 on that Go file: stock hx 5.0 ms
+  p50, hxb 8.4 ms (26 ms on the earlier build).

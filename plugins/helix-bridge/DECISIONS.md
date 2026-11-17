@@ -188,3 +188,17 @@ conservatively. Newest last.
     the textarea gains or loses focus (window switches included) once Helix
     turns focus reporting on, and Helix reloads clean buffers changed on
     disk. The plugin adds nothing.
+37. **Following an edit to a file that is not open** opens it where the
+    agent wrote, with `editor/reveal` and `follow`: `editor/reload` ignores
+    files that are not open, and bb's diffs carry no line numbers, so the
+    added block is found in the file's current text (`editor/text`).
+38. **Paths under `/private`** (macOS `/tmp`, `/var`) that agents report are
+    mapped back to the environment's root before reaching Helix, which keeps
+    `/tmp/x` and `/private/tmp/x` as two buffers.
+39. **The turn-end changes list** holds only hunks that were not in the
+    uncommitted diff when the turn started (both diffs are against the HEAD
+    the turn started on, so the same hunk is the same text); a turn that
+    changed nothing leaves the previous list. Labels count changed lines,
+    not git's context.
+40. **Pane numbers** are assigned in layout order the first time a new pane
+    appears, so a split made by `helix_show` gets the next number.

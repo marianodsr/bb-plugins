@@ -22,7 +22,7 @@ const pct = (xs, p) => {
   return s.length ? Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10 : null;
 };
 
-const { browser, page } = await launch({ width: 1440, height: 900, theme: "dark" });
+const { browser, page } = await launch({ width: Number(opt("width", "1440")), height: 900, theme: "dark" });
 const samples = Object.fromEntries(modes.map((m) => [m, []]));
 const outputs = Object.fromEntries(modes.map((m) => [m, []]));
 const perRound = [];

@@ -3,7 +3,7 @@
 // app does: clean exits go back to the thread with no terminal left and the
 // composer focused; a crash shows the exit report.
 //
-//   node spike/exit.mjs --thread <threadId> --project <projectId> [--keys ":q"]
+//   node spike/exit.mjs --thread <threadId> --project <projectId> [--how ":q" | ":q!" | ":wq" | ":cq" | bbclose | kill]
 import { execFileSync } from "node:child_process";
 import { launch, SERVER, sleep } from "./browser.mjs";
 
@@ -22,6 +22,34 @@ const helixTerminals = () =>
 
 const { browser, page } = await launch({ width: 1440, height: 900, theme: "dark" });
 const result = { how };
+await page.evaluateOnNewDocument(() => {
+  window.__keyLog = [];
+  window.addEventListener("keydown", (e) => {
+    const a = document.activeElement;
+    const where = a?.closest?.("[data-helix-terminal]") ? "terminal" : a?.closest?.("[data-promptbox-layout]") ? "composer" : `${a?.tagName}`;
+    window.__keyLog.push(`${e.key}@${where}`);
+  }, true);
+  window.__wsLog = [];
+  const Native = window.WebSocket;
+  window.WebSocket = class extends Native {
+    constructor(url, protocols) {
+      super(url, protocols);
+      if (!String(url).includes("/ws/terminals/")) return;
+      this.addEventListener("message", (e) => {
+        const text = String(e.data);
+        if (text.includes('"type":"exited"')) window.__wsLog.push(JSON.parse(text).session);
+      });
+      const send = this.send.bind(this);
+      this.send = (data) => {
+        try {
+          const m = JSON.parse(data);
+          if (m.type === "input") (window.__sentLog ??= []).push(atob(m.dataBase64).replace(/\x1b/gu, "ESC").replace(/\r/gu, "CR"));
+        } catch {}
+        return send(data);
+      };
+    }
+  };
+});
 try {
   await page.goto(`${SERVER}/plugins/helix-bridge/editor/${thread}`, { waitUntil: "networkidle2", timeout: 45000 });
   await page.waitForSelector("[data-helix-terminal] canvas, [data-helix-terminal] .term-grid", { timeout: 30000 });
@@ -62,6 +90,7 @@ try {
     exitReport: await page.evaluate(() => document.querySelector("[data-helix-exit]")?.innerText ?? null),
     composerFocused: await page.evaluate(() => Boolean(document.activeElement?.closest?.("[data-promptbox-layout]"))),
     terminals: helixTerminals(),
+    exited: await page.evaluate(() => (window.__wsLog ?? []).map((s) => ({ exitCode: s.exitCode, closeReason: s.closeReason }))),
   };
   if (shot) await page.screenshot({ path: shot });
 } finally {

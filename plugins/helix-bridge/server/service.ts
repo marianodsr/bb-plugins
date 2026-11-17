@@ -272,6 +272,9 @@ export class HelixService {
     if (options.pane !== undefined) params.viewId = await this.paneViewId(instance, options.pane);
     const result = await this.call<OpenResult>(instance, "editor/open", params);
     if (instance.threadId && params.focus !== false) this.deps.reveal(instance.threadId);
+    // A pane seen for the first time (a new split): number every pane in
+    // layout order first, so the panes already there keep the low numbers.
+    if (typeof result.viewId === "number" && !this.paneNumbers.get(instance.key)?.has(result.viewId) && instance.summary.capabilities.includes("views")) await this.panes(instance).catch(() => null);
     return { ...result, pane: typeof result.viewId === "number" ? this.paneNumber(instance, result.viewId) : null, stale: this.mayBeStale(instance) };
   }
 

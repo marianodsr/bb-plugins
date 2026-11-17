@@ -263,6 +263,14 @@ describe("agent tools", () => {
     mock.control({ cmd: "busy", what: "idle" });
   });
 
+  it("numbers a new split after the panes already there", async () => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" });
+    const shown = await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 3, split: "vertical", now: true }, ctx);
+    expect(textOf(shown)).toMatch(/\(pane 2\)/u);
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_panes", {}, ctx))).toMatch(/layout: vertical\(1, 2\)/u);
+  });
+
   it("counts the files a rename preview touches", async () => {
     const result = await fake.harness.behavior.callAgentTool("helix_query", { kind: "renamePreview", path: "main.go", line: 10, col: 6, newName: "MakeGreeter" }, ctx);
     expect(textOf(result)).toMatch(/^3 edits in 2 files \(not applied\)/u);

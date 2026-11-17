@@ -22,6 +22,21 @@ if (!ctl) throw new Error("--ctl <dir> is required");
 mkdirSync(ctl, { recursive: true });
 
 const { browser, page } = await launch({ width: Number(opt("width", "1440")), height: Number(opt("height", "900")), theme: "dark" });
+// Terminal socket messages other than output, for checking exit handling.
+await page.evaluateOnNewDocument(() => {
+  window.__wsLog = [];
+  const Native = window.WebSocket;
+  window.WebSocket = class extends Native {
+    constructor(url, protocols) {
+      super(url, protocols);
+      if (!String(url).includes("/ws/terminals/")) return;
+      this.addEventListener("message", (e) => {
+        const text = String(e.data);
+        if (!text.includes('"type":"output"')) window.__wsLog.push(text.slice(0, 600));
+      });
+    }
+  };
+});
 const textarea = () => page.evaluate(() => document.querySelector("[data-helix-terminal] textarea")?.focus());
 const editorUrl = `${SERVER}/plugins/helix-bridge/editor/${thread}`;
 
