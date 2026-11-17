@@ -221,6 +221,26 @@ Tools, all offered only when an instance is bound to the calling thread:
 When the fork gains `annotations`, show each comment and the agent's reply
 under its lines in Helix, and clear them when resolved.
 
+### Installable on another machine
+
+The owner will install this on a second Mac. See "Distribution" in the fork's
+ARCHITECTURE.md; for the plugin:
+
+- Installs from GitHub with
+  `bb plugin install git:https://github.com/marianodsr/bb-plugins.git@main --subdirectory plugins/helix-bridge`
+  and nothing else: no file outside the plugin directory is needed at run
+  time, the kit copy is committed, and no path from this machine appears in
+  code or defaults.
+- The editor binary is `hxb` on `PATH` by default, with a setting to
+  override. The bridge directory comes from Helix's cache directory rules
+  (`$XDG_CACHE_HOME` or `~/.cache`), not a hard-coded path.
+- `bb hx doctor` is the one command that says what is missing on a new
+  machine and how to fix each item: the binary, its version and protocol,
+  the socket directory, `gopls` and `goimports`.
+- Missing pieces show as a setup state in the app, never as an error.
+- Commit everything needed to build and test, including the mock bridge and
+  driver scripts.
+
 ## Build order
 
 1. Host entry and server against a mock bridge (a small Node script that
