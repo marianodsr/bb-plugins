@@ -75,8 +75,8 @@ plugin authoring references).
   the calling thread's environment):
   `helix_selection` (what the user has selected or is looking at),
   `helix_open` (show the user a location), `helix_diagnostics`,
-  `helix_query` (the `lsp/query` kinds), `helix_changes` (set the walk list
-  explicitly). `agents.configure` adds a short instruction saying the
+  `helix_query` (the `lsp/query` kinds), and the editor-driving tools in
+  "The agent drives the editor" below. `agents.configure` adds a short instruction saying the
   editor is connected and when each tool is the right one.
 - **Settings**: path to `hxb`, auto-reload on/off, follow-agent on/off.
 
@@ -94,6 +94,132 @@ Follows `docs/DESIGN.md` and uses the shared kit.
   build it.
 - Palette commands: open Helix for this thread, reload Helix buffers, bind
   this thread to an instance.
+
+## Requirements added by the user
+
+The acceptance criteria are listed at the top of the fork's
+`bb-bridge/ARCHITECTURE.md`. For the plugin they mean:
+
+### The editor is a full work surface
+
+The user will work in Helix all day inside bb and add a file tree later. A
+narrow side-panel tab is not enough.
+
+- Helix must be usable at full width and height: as the main area of a page,
+  or a maximised panel, whichever bb allows. Find out what bb offers and
+  choose the surface that gives Helix the most room with the thread still
+  one key away.
+- **Every key reaches Helix.** Escape, Ctrl and Alt/Option chords, function
+  keys, and the keys bb itself binds must arrive while the editor has focus.
+  Before building UI, run a spike in bb's own terminal with a key-echo
+  program and report a matrix of what arrives, what bb swallows, and what is
+  mangled (Option as Meta on macOS matters: Helix uses Alt bindings). Also
+  measure key-to-paint latency, true colour, mouse, resize and paste.
+- If bb's terminal cannot pass the keys or is visibly slow, say so with the
+  numbers; the fallback is a terminal surface owned by the plugin, which is a
+  bigger piece of work the coordinator will decide on. Do not start it
+  unasked.
+
+### Decision: the editor surface is ours, on Ghostty's terminal core
+
+The user asked for the terminal that runs Helix inside bb to be Ghostty. The
+Ghostty application cannot be embedded in bb's window, but Ghostty's terminal
+core runs in the browser as WebAssembly, so the plugin owns the editor
+surface:
+
+- **Session**: still a bb terminal (`bb.sdk.terminals.create`, scoped to the
+  thread, running `hxb`), so bb keeps the process alive across reloads and
+  the thread's `BB_*` variables are set.
+- **Attach**: the app connects to that session's own stream, the way bb's
+  terminal does (`/ws/terminals/<id>`, or the SDK's attach API if the
+  installed SDK has one; check the typings first).
+- **Render**: Ghostty's core. Two candidates: `ghostty-web` (Coder; canvas
+  renderer, xterm.js-style API) and `@wterm/ghostty` with `@wterm/dom`
+  (Vercel; DOM renderer). Build a thin adapter so the renderer can be
+  swapped, measure both and bb's stock terminal with Helix on a large Go
+  file, and keep the fastest that renders correctly. Report key-to-paint
+  latency (p50, p95), full-screen redraw time, memory, and the key matrix.
+- **Keys**: the surface owns the keyboard while focused. Every key goes to
+  Helix except a small, documented escape set for getting back to bb (for
+  example the shortcut that focuses the composer). Enable the Kitty keyboard
+  protocol if the core supports it so Alt and Ctrl chords are unambiguous;
+  otherwise make Option send Meta. bb's own shortcuts must not fire while
+  the editor has focus.
+- **Placement**: the editor fills the thread's work area. bb has
+  `experimental_primarySurface` for a plugin surface that takes the thread's
+  main area with the chat collapsed; check the installed SDK, and otherwise
+  use a full plugin page or a maximised panel tab. The thread stays one key
+  away, and the chat can sit beside the editor in a split.
+- **Look**: read the user's Ghostty config read-only
+  (`~/.config/ghostty/config`: font family, size, theme) and match it, with
+  plugin settings to override. Bundle a symbols font only if needed.
+- **Clipboard, mouse, resize, focus reporting, true colour, bracketed
+  paste, OSC 52**: all must work; Helix uses them.
+
+`upstream/wterm/` holds a snapshot of a store plugin (MIT) that attaches to bb
+terminals and renders with `@wterm/ghostty`. Read it to learn how the SDK
+pieces fit; write our own.
+
+### The agent drives the editor
+
+The user asks things like "take me to the entry point of X" and expects to
+land on the line, in a pane the agent chose. The agent also has full control
+of the editor (PROTOCOL.md: `editor/open`, `locations/set`, `view/*`,
+`editor/select`, `editor/applyEdits`, `editor/command`).
+
+Tools, all offered only when an instance is bound to the calling thread:
+
+| Tool | Does |
+|---|---|
+| `helix_show` | Take the user to a place: `path`, `line`, optional range, optional `split` and a one-line `note`. Reveals the editor surface in bb if it is hidden. Reports back where the user landed, or that the jump is waiting because they are typing. |
+| `helix_tour` | Show several places in order, each with a note (`locations/set` list `tour`), and jump to the first. The user walks it with `:bb-next`. |
+| `helix_panes` | List the panes with what each shows; focus or close one. |
+| `helix_selection` | What the user is looking at or has selected, with the text. |
+| `helix_query` | Language-server queries (see the static analysis section). |
+| `helix_diagnostics` | Diagnostics the editor holds. |
+| `helix_edit` | Apply edits to a buffer as one undoable step, for changes the user should see happen in the editor; agents still use their normal file tools for bulk work. |
+| `helix_command` | Anything else: a typed command, a named command, or keys. Subject to Helix's command policy; a refusal is returned as the reason, not retried. |
+
+- The skill and the `agents.configure` instruction teach the pattern: find
+  the place with `helix_query` or a search, then `helix_show` it; use
+  `helix_tour` when there is more than one stop; never use `helix_command`
+  for something a structured tool does.
+- `helix_show` and `helix_tour` are what a user-visible answer should end
+  with when the user asked to be taken somewhere; say in one line where they
+  are now.
+- The command policy is Helix's (`safe` by default: no shell commands, no
+  discarding unsaved work). Show the active policy in the plugin's status and
+  never try to work around a refusal.
+- A deferred jump (`"deferred": true`) is not a failure: tell the agent the
+  user will see a prompt in the editor.
+
+### bb always knows where the user is
+
+- The thread shows the focused file and line live, updated from
+  `event/focus` and `event/selection`, with no bb write per event.
+- Messages the user sends from a thread with a bound Helix can carry the
+  editor position (file, line, selected range) automatically. Default on,
+  with a visible toggle in the composer. Find the right SDK mechanism (a
+  composer contribution, a mention, or the dispatch hook) and keep it to one
+  short line of context, not the file's text.
+- `helix_selection` gives an agent the same thing on demand, with the text.
+
+### Select, comment, send
+
+`event/send` has four kinds (PROTOCOL.md):
+
+- `send`: selection becomes a draft in the composer.
+- `ask`: sent at once with the question.
+- `comment`: a review comment on the selected lines, kept until flushed.
+  When the Review Editor plugin is installed, create it there through its
+  RPC (`plugins/review-editor/server/contract.ts`) so Helix comments and
+  Review Editor comments are one list with one agent loop. Otherwise keep a
+  simple pending list in this plugin.
+- `flush`: send all pending comments to the thread through the same handoff
+  the Review Editor uses.
+
+When the fork gains `annotations`, show each comment and the agent's reply
+under its lines in Helix, and clear them when resolved.
 
 ## Build order
 
