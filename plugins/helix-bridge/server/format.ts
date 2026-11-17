@@ -25,6 +25,12 @@ export function lineSpan(start: number, end: number): string {
 }
 
 /** The lines a range covers; an end at column 1 of a later line stops before it. */
+/** The last line a selection covers: an end at column 1 stops before that line. */
+export function lastLine(start: { line: number }, end: { line: number; col: number } | null): number | null {
+  if (!end) return null;
+  return end.col === 1 && end.line > start.line ? end.line - 1 : end.line;
+}
+
 export function rangeLines(range: Range): { start: number; end: number } {
   const end = range.end.line > range.start.line && range.end.col === 1 ? range.end.line - 1 : range.end.line;
   return { start: range.start.line, end: Math.max(range.start.line, end) };

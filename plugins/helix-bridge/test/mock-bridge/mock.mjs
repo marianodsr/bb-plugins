@@ -5,7 +5,7 @@
 //   node test/mock-bridge/mock.mjs --dir <bridgeDir> --workspace <root> \
 //     [--cwd <dir>] [--open a.go,b.go] [--env BB_THREAD_ID=thr_x,...] \
 //     [--capabilities editor,reload,...] [--policy safe|all|none] \
-//     [--pid <n>] [--control <socket>]
+//     [--pid <n>] [--control <socket>] [--test false]
 //
 // Writes <dir>/<pid>.json after the socket listens and removes both on a clean
 // exit. A control socket (NDJSON, see ctl.mjs and README.md) drives the
@@ -359,7 +359,7 @@ export async function startMockBridge(options) {
     // Not part of PROTOCOL.md: marks a test instance so bb never maps it to a
     // thread through its workspace. It binds only through an explicit
     // BB_THREAD_ID or \`bb hx bind\`.
-    test: true,
+    ...(options.test === false ? {} : { test: true }),
   };
   const tmp = `${registryPath}.tmp`;
   writeFileSync(tmp, JSON.stringify(registry, null, 2));
@@ -432,6 +432,9 @@ if (isMain) {
     policy: args.policy,
     pid: args.pid ? Number(args.pid) : undefined,
     control: args.control,
+    // `--test false`: behave like a real instance (mapped by workspace). Only
+    // for a throwaway workspace that no real thread uses.
+    test: args.test !== "false",
     log: (m) => console.error(`[mock] ${m}`),
   });
   console.log(JSON.stringify({ listening: mock.socketPath, registry: mock.registryPath, control: args.control ?? null }));

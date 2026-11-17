@@ -18,6 +18,7 @@ import type {
   ViewInfo,
 } from "../shared/protocol";
 import { type Bridge, BridgeFailure, type BoundInstance, within } from "./bridge";
+import { lastLine } from "./format";
 
 type Sdk = BbPluginApi["sdk"];
 
@@ -267,7 +268,13 @@ export class HelixService {
       break;
     }
     const cursor = focus.cursor;
-    const range = focus.anchor && cursor ? ` selecting ${cursor.line}:${cursor.col} to ${focus.anchor.line}:${focus.anchor.col}` : cursor ? ` line ${cursor.line}, column ${cursor.col}` : "";
+    const last = cursor ? lastLine(cursor, focus.anchor) : null;
+    const range =
+      focus.anchor && cursor
+        ? ` lines ${cursor.line}-${last} selected (${cursor.line}:${cursor.col} to ${focus.anchor.line}:${focus.anchor.col}, end exclusive)`
+        : cursor
+          ? ` line ${cursor.line}, column ${cursor.col}`
+          : "";
     return `Helix editor position (the user is looking at): ${path}${range}${focus.modified ? ", with unsaved changes" : ""}${instance.summary.mode && instance.summary.mode !== "normal" ? `, ${instance.summary.mode} mode` : ""}. Use helix_selection for the text.`;
   }
 

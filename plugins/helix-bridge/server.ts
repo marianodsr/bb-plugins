@@ -16,7 +16,7 @@ import { Bridge, BridgeFailure, type BoundInstance } from "./server/bridge";
 import { registerCli } from "./server/cli";
 import { rpcContract, tags, type AppInstance, type Position } from "./server/contract";
 import { Follower } from "./server/follow";
-import { displayPath, rootsOf } from "./server/format";
+import { displayPath, lastLine, rootsOf } from "./server/format";
 import { SendHandler } from "./server/sends";
 import { HelixService } from "./server/service";
 import { MIGRATIONS, Store } from "./server/store";
@@ -58,6 +58,7 @@ export default async function plugin(bb: BbPluginApi) {
     host.call(method as keyof typeof hostContract & string, input as never, options);
 
   const skippedByInstance = new Map<string, string[]>();
+  const openingTerminals = new Map<string, Promise<{ terminalId: string; created: boolean }>>();
   let lastPositionsAt = 0;
   let positionTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -115,7 +116,7 @@ export default async function plugin(bb: BbPluginApi) {
       path: i.summary.focus?.path ? displayPath(i.summary.focus.path, rootsOf(i)) : null,
       line: i.summary.focus?.cursor?.line ?? null,
       col: i.summary.focus?.cursor?.col ?? null,
-      endLine: i.summary.focus?.anchor?.line ?? null,
+      endLine: i.summary.focus?.cursor ? lastLine(i.summary.focus.cursor, i.summary.focus.anchor) : null,
       mode: i.summary.mode,
     }));
   }
@@ -181,7 +182,7 @@ export default async function plugin(bb: BbPluginApi) {
       bindingSource: instance.bindingSource,
       terminalId: instance.summary.env.BB_TERMINAL_ID ?? null,
       focus: focus
-        ? { path: focus.path ? displayPath(focus.path, roots) : null, absolutePath: focus.path, line: focus.cursor?.line ?? null, col: focus.cursor?.col ?? null, endLine: focus.anchor?.line ?? null, modified: focus.modified }
+        ? { path: focus.path ? displayPath(focus.path, roots) : null, absolutePath: focus.path, line: focus.cursor?.line ?? null, col: focus.cursor?.col ?? null, endLine: focus.cursor ? lastLine(focus.cursor, focus.anchor) : null, modified: focus.modified }
         : null,
       mode: instance.summary.mode,
       diagnostics: instance.summary.diagnostics,
@@ -229,15 +230,20 @@ export default async function plugin(bb: BbPluginApi) {
         hud: values.hud,
       };
     },
-    editorTerminal: async ({ threadId }) => {
-      const sdk = bb.sdk;
-      const listed = (await sdk.terminals.list({ scope: { kind: "thread", threadId } })) as unknown;
-      const terminals = (Array.isArray(listed) ? listed : ((listed as { terminals?: unknown[] }).terminals ?? [])) as { id: string; title: string; status: string }[];
-      const existing = terminals.find((t) => t.title === TERMINAL_TITLE && (t.status === "running" || t.status === "starting"));
-      if (existing) return { terminalId: existing.id, created: false };
-      const { hxbPath } = await settings.get();
-      const created = await sdk.terminals.create({ scope: { kind: "thread", threadId }, title: TERMINAL_TITLE, cols: 160, rows: 48, start: { mode: "command", command: shellQuote(hxbPath.trim() || "hxb") } });
-      return { terminalId: created.id, created: true };
+    editorTerminal: ({ threadId }) => {
+      // One session per thread: concurrent opens (page and tab) share one call.
+      const running = openingTerminals.get(threadId);
+      if (running) return running;
+      const work = (async () => {
+        const { sessions } = await bb.sdk.terminals.list({ scope: { kind: "thread", threadId } });
+        const existing = sessions.find((t) => t.title === TERMINAL_TITLE && (t.status === "running" || t.status === "starting"));
+        if (existing) return { terminalId: existing.id, created: false };
+        const { hxbPath } = await settings.get();
+        const created = await bb.sdk.terminals.create({ scope: { kind: "thread", threadId }, title: TERMINAL_TITLE, cols: 160, rows: 48, start: { mode: "command", command: shellQuote(hxbPath.trim() || "hxb") } });
+        return { terminalId: created.id, created: true };
+      })().finally(() => openingTerminals.delete(threadId));
+      openingTerminals.set(threadId, work);
+      return work;
     },
   });
 

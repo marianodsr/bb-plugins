@@ -254,6 +254,30 @@ describe("sends from Helix", () => {
   });
 });
 
+describe("editor terminal", () => {
+  it("starts one session per thread and reuses it", async () => {
+    const created: unknown[] = [];
+    const sessions: { id: string; title: string; status: string }[] = [];
+    fake.harness.sdk.stub("terminals.list", async () => ({ sessions }) as never);
+    fake.harness.sdk.stub("terminals.create", async (args: unknown) => {
+      created.push(args);
+      const session = { id: `term_${created.length}`, title: "Helix", status: "running" };
+      sessions.push(session);
+      return session as never;
+    });
+    const [a, b] = await Promise.all([
+      fake.harness.behavior.callRpc("editorTerminal", { threadId: "thr_term" }),
+      fake.harness.behavior.callRpc("editorTerminal", { threadId: "thr_term" }),
+    ]);
+    const again = await fake.harness.behavior.callRpc("editorTerminal", { threadId: "thr_term" });
+    expect(created).toHaveLength(1);
+    expect(a).toEqual({ terminalId: "term_1", created: true });
+    expect(b).toEqual(a);
+    expect(again).toEqual({ terminalId: "term_1", created: false });
+    expect(created[0]).toMatchObject({ scope: { kind: "thread", threadId: "thr_term" }, title: "Helix", start: { mode: "command", command: "hxb" } });
+  });
+});
+
 describe("helpers", () => {
   it("parses locations", () => {
     expect(parseLocation("a/b.go")).toEqual({ path: "a/b.go" });
