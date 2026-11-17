@@ -139,17 +139,35 @@ export function placesOf(diff: string, text: string): { line: number; endLine?: 
     }
   }
   if (current) blocks.push(current);
+  // An edit tool's diff holds its old and new strings, which can start or end
+  // inside a line: the first added line then ends a line of the file and the
+  // last one starts a line. Whole lines are tried first.
+  const exact = (added: string[], i: number) => added.every((a, j) => lines[i + j] === a);
+  const partial = (added: string[], i: number) =>
+    added.some((a) => a.trim() !== "") &&
+    added.every((a, j) => {
+      const line = lines[i + j]!;
+      if (added.length === 1) return line.includes(a);
+      if (j === 0) return line.endsWith(a);
+      if (j === added.length - 1) return line.startsWith(a);
+      return line === a;
+    });
   const places: { line: number; endLine?: number; label: string }[] = [];
   let from = 0;
   for (const block of blocks) {
     if (block.added.length === 0) continue;
-    for (let i = from; i + block.added.length <= lines.length; i += 1) {
-      if (block.added.every((a, j) => lines[i + j] === a)) {
-        const line = i + 1;
-        places.push({ line, ...(block.added.length > 1 ? { endLine: line + block.added.length - 1 } : {}), label: `+${block.added.length} -${block.removed}` });
-        from = i + block.added.length;
-        break;
-      }
+    for (const matches of [exact, partial]) {
+      let found = -1;
+      for (let i = from; i + block.added.length <= lines.length; i += 1)
+        if (matches(block.added, i)) {
+          found = i;
+          break;
+        }
+      if (found < 0) continue;
+      const line = found + 1;
+      places.push({ line, ...(block.added.length > 1 ? { endLine: line + block.added.length - 1 } : {}), label: `+${block.added.length} -${block.removed}` });
+      from = found + block.added.length;
+      break;
     }
   }
   return places;

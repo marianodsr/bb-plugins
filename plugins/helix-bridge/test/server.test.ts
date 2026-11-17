@@ -689,6 +689,12 @@ describe("watching the agent write", () => {
     expect(placesOf("--- a/x\n+++ b/x\n-b\n+B\n c\n d\n-e\n+E\n+F\n", text)).toEqual([{ line: 2, label: "+1 -1" }, { line: 5, endLine: 6, label: "+2 -1" }]);
     expect(placesOf("--- /dev/null\n+++ b/x\n+a\n+b\n", "a\nb\n")).toEqual([{ line: 1, endLine: 2, label: "+2 new file" }]);
     expect(placesOf("--- a/x\n+++ b/x\n-gone\n", text)).toEqual([]);
+    // An edit tool's strings can start or end inside a line (the real turn's util.go edit).
+    const go = 'package main\n\nfunc shout(s string) string {\n\treturn s + "!!" // take 7\n}\n';
+    expect(placesOf('--- a/u.go\n+++ b/u.go\n-\treturn s + "!"\n+\treturn s + "!!"\n', go)).toEqual([{ line: 4, label: "+1 -1" }]);
+    expect(placesOf('--- a/u.go\n+++ b/u.go\n-x string {\n+s string) string {\n+\treturn s + "!!"\n', go)).toEqual([{ line: 3, endLine: 4, label: "+2 -1" }]);
+    // Whole lines win over a part of an earlier line.
+    expect(placesOf("--- a/x\n+++ b/x\n-q\n+c\n", "abc\nc\n")).toEqual([{ line: 2, label: "+1 -1" }]);
   });
 
   it("finds where a diff without line numbers landed", () => {
