@@ -510,6 +510,30 @@ export default async function plugin(bb: BbPluginApi) {
       if (sendNow && instance) message = await sends.flushFor(instance);
       return { id: created.id, kept: created.where, message };
     },
+    reviewSummaries: async ({ threadIds }) => {
+      const out: Record<string, { files: number; unviewed: number; unsent: number; needsYou: number; title: string }> = {};
+      for (const threadId of threadIds) {
+        const review = reviews.forThread(threadId);
+        if (!review) continue;
+        const marks = await bb.sdk.plugins
+          .callRpc({ pluginId: "bb--git", method: "viewed", input: { environmentId: review.environmentId, target: review.resolved.gitTarget }, outputSchema: viewedSchema })
+          .then((r) => new Map(r.files.map((f) => [f.path, f.revision])), () => new Map<string, string>());
+        const unviewed = review.resolved.files.filter((f) => !(f.revision && marks.get(f.path) === f.revision)).length;
+        let unsent = store.pendingComments(threadId).length;
+        let needsYou = 0;
+        if (await sends.reviewEditorRunning()) {
+          const { comments } = await bb.sdk.plugins
+            .callRpc({ pluginId: "review-editor", method: "listComments", input: { environmentId: review.environmentId }, outputSchema: z.object({ comments: z.array(reviewCommentSchema) }) })
+            .catch(() => ({ comments: [] as z.infer<typeof reviewCommentSchema>[] }));
+          for (const c of comments.filter((c) => c.threadId === threadId || c.sentThreadId === threadId).map(railCommentOf)) {
+            if (c.state === "unsent") unsent += 1;
+            if (c.state === "answered" || c.state === "resolved") needsYou += 1;
+          }
+        }
+        out[threadId] = { files: review.resolved.files.length, unviewed, unsent, needsYou, title: review.title };
+      }
+      return out;
+    },
     notifyHelix: async ({ threadId, message }) => {
       const instance = (await service.instancesForThread(threadId))[0];
       if (!instance) return { ok: false };

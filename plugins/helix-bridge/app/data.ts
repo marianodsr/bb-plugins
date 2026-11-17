@@ -98,6 +98,15 @@ export function useInstances(): Loaded<{ instances: AppInstance[] }> {
   return useRead((rpc) => rpc.call("instances", null), []);
 }
 
+export type ReviewSummary = { files: number; unviewed: number; unsent: number; needsYou: number; title: string };
+
+/** Per thread: its active review's size and what waits (no git; refreshed when reviews or comments change). */
+export function useReviewSummaries(threadIds: readonly string[]): Record<string, ReviewSummary> {
+  const key = [...threadIds].sort().join(",");
+  const { data } = useRead((rpc) => (key ? rpc.call("reviewSummaries", { threadIds: key.split(",").slice(0, 50) }) : Promise.resolve({})), [key], ["review", "comments", "instances"]);
+  return data ?? {};
+}
+
 /** `file:line` for a focus or a live position. */
 export function whereLabel(path: string | null | undefined, line: number | null | undefined, endLine?: number | null): string | null {
   if (!path) return null;

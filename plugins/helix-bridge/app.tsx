@@ -14,6 +14,8 @@ import { HelixOverlay } from "./app/overlay/HelixOverlay";
 import { EditorRail } from "./app/rail/Rail";
 import { commandRequest } from "./app/stores";
 import { pageActions } from "./app/pages/pageActions";
+import { useReviewSummaries } from "./app/data";
+import { railTab } from "./app/rail/railStore";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
 import { surfaceControls, visibleSurfaces } from "./app/surface/EditorSurface";
 import { HelixSegment, HelixStatusRow, HelixTab, useHelixSegmentVisible } from "./app/thread/ThreadParts";
@@ -68,7 +70,20 @@ export default definePluginApp((app) => {
     icon: "Code",
     group: ACTION_GROUPS.open,
     placement: "header",
-    item: ({ thread, navigate }) => ({ label: "Helix", icon: "Code", run: () => navigate.toPluginPanel(EDITOR_PANEL, { subPath: thread.id }) }),
+    // The thread's editor; while a review has files not viewed, the button
+    // says how many and opens the page on Changes.
+    useData: ({ threadIds }) => useReviewSummaries(threadIds),
+    item: ({ thread, navigate, data }) => {
+      const unviewed = data?.[thread.id]?.unviewed ?? 0;
+      return {
+        label: unviewed > 0 ? `${unviewed} to view` : "Helix",
+        icon: "Code",
+        run: () => {
+          if (unviewed > 0) railTab.set("changes");
+          navigate.toPluginPanel(EDITOR_PANEL, { subPath: thread.id });
+        },
+      };
+    },
   });
 
   app.composer.customize({
@@ -86,6 +101,7 @@ export default definePluginApp((app) => {
   app.commands.register({
     id: "open-editor",
     title: "Helix: open the editor for this thread",
+    defaultShortcut: { key: "e", alt: true, mod: true },
     isAvailable: ({ threadId }) => threadId !== null,
     run: ({ threadId }) => {
       if (threadId) commandRequest.set({ kind: "open", threadId, at: Date.now() });

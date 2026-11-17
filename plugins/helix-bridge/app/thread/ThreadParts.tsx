@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { EmptyState, StatusDot } from "../../kit";
-import { useHelixRpc, useInstances, useThreadHelix, whereLabel } from "../data";
+import { useHelixRpc, useInstances, useReviewSummaries, useThreadHelix, whereLabel } from "../data";
+import { railTab } from "../rail/railStore";
 import { EDITOR_PANEL } from "../pages/EditorPage";
 import { composerFocusRequest } from "../stores";
 import { EditorSurface } from "../surface/EditorSurface";
@@ -49,6 +50,7 @@ const BINDING = { terminal: "started in this thread's terminal", explicit: "boun
 /** Rows in the thread context card: status and where the user is, live. */
 export function HelixStatusRow({ threadId }: { threadId: string }) {
   const { data, position } = useThreadHelix(threadId);
+  const summary = useReviewSummaries([threadId])[threadId] ?? null;
   const navigate = useBbNavigate();
   const [binding, setBinding] = useState(false);
   const instance = data?.instance ?? null;
@@ -78,6 +80,17 @@ export function HelixStatusRow({ threadId }: { threadId: string }) {
           </Button>
         }
       />
+      {summary ? (
+        <ThreadContextCardRow
+          icon="GitCompare"
+          label={<span className="truncate">Changes: {[`${summary.files} ${summary.files === 1 ? "file" : "files"}`, summary.unviewed > 0 ? `${summary.unviewed} to view` : "all viewed", summary.needsYou > 0 ? `${summary.needsYou} ${summary.needsYou === 1 ? "comment needs" : "comments need"} you` : summary.unsent > 0 ? `${summary.unsent} ${summary.unsent === 1 ? "comment" : "comments"} not sent` : null].filter(Boolean).join(", ")}</span>}
+          title={`${summary.title}. Open the editor on its changes.`}
+          onClick={() => {
+            railTab.set(summary.needsYou > 0 ? "comments" : "changes");
+            navigate.toPluginPanel(EDITOR_PANEL, { subPath: threadId });
+          }}
+        />
+      ) : null}
       {instance.skippedModified.length > 0 ? (
         <ThreadContextCardRow icon="AlertTriangle" label={<span className="truncate">Not reloaded: {instance.skippedModified.join(", ")}</span>} title="These buffers have unsaved changes in Helix, so the agent's edits were not loaded into them. Save or reload them in Helix." />
       ) : null}

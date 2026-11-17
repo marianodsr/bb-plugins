@@ -183,6 +183,12 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.boolean() }),
   },
+  reviewSummaries: {
+    experimental_description: "For thread headers and context cards: per thread, its active review's file count, how many are not viewed, and the comments waiting. No git: the review the server holds and bb's viewed marks.",
+    input: z.object({ threadIds: z.array(id).max(50) }).strict(),
+    output: z.record(z.string(), z.object({ files: z.number(), unviewed: z.number(), unsent: z.number(), needsYou: z.number(), title: z.string() })),
+    tags: ({ threadIds }) => threadIds.flatMap((t) => [tags.review(t), tags.comments(t)]),
+  },
   notifyHelix: {
     experimental_description: "Show one line on the status line of the thread's Helix (an action the page could not do).",
     input: z.object({ threadId: id, message: z.string().min(1).max(300) }).strict(),
