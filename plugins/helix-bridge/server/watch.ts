@@ -113,6 +113,48 @@ export function revealOf(diff: string, text: string): { ranges: Range[]; removed
   return null;
 }
 
+/**
+ * Every changed block of a diff as places in the file's current text: runs of
+ * `-`/`+` lines, located by their added lines (searched in order, so blocks
+ * keep their sequence). A block with nothing added cannot be placed. A new
+ * file is one place over its first lines.
+ */
+export function placesOf(diff: string, text: string): { line: number; endLine?: number; label: string }[] {
+  const lines = text.split("\n");
+  if (/^--- \/dev\/null/mu.test(diff)) {
+    const count = Math.max(1, lines.length - (text.endsWith("\n") ? 1 : 0));
+    return [{ line: 1, ...(count > 1 ? { endLine: count } : {}), label: `+${count} new file` }];
+  }
+  const blocks: { added: string[]; removed: number }[] = [];
+  let current: { added: string[]; removed: number } | null = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("--- ") || line.startsWith("+++ ")) continue;
+    if (line.startsWith("+") || line.startsWith("-")) {
+      current ??= { added: [], removed: 0 };
+      if (line.startsWith("+")) current.added.push(line.slice(1));
+      else current.removed += 1;
+    } else if (current) {
+      blocks.push(current);
+      current = null;
+    }
+  }
+  if (current) blocks.push(current);
+  const places: { line: number; endLine?: number; label: string }[] = [];
+  let from = 0;
+  for (const block of blocks) {
+    if (block.added.length === 0) continue;
+    for (let i = from; i + block.added.length <= lines.length; i += 1) {
+      if (block.added.every((a, j) => lines[i + j] === a)) {
+        const line = i + 1;
+        places.push({ line, ...(block.added.length > 1 ? { endLine: line + block.added.length - 1 } : {}), label: `+${block.added.length} -${block.removed}` });
+        from = i + block.added.length;
+        break;
+      }
+    }
+  }
+  return places;
+}
+
 interface ReloadOutcome {
   reloaded: string[];
   unchanged: string[];
@@ -125,6 +167,8 @@ export interface WatchDeps {
   service: HelixService;
   settings(): Promise<{ autoReload: boolean; followAgent: boolean }>;
   log(message: string): void;
+  /** Every edit the agent made, for the turn's changes list (follow.ts). */
+  edited?(edit: FileEdit): void;
   /** For measurement: how long from bb recording an edit to Helix having it. */
   timing?(edit: FileEdit, ms: number, instance: BoundInstance): void;
 }
@@ -202,6 +246,7 @@ export class AgentWatcher {
    */
   async onEdit(edit: FileEdit): Promise<void> {
     this.deps.service.noteAgentEdit(edit.environmentId);
+    this.deps.edited?.(edit);
     const settings = await this.deps.settings();
     if (!settings.autoReload) return;
     for (const instance of this.serving(edit.environmentId)) {

@@ -381,6 +381,14 @@ export class InstanceManager {
         break;
       case "event/documentChanged":
       case "event/documentSaved": {
+        if (method === "event/documentSaved") {
+          // A save can change an active review: the server refreshes it.
+          this.sendSeq += 1;
+          this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { kind: "saved", path: params.path ?? null } });
+          if (this.sends.length > MAX_SENDS) this.sends.splice(0, this.sends.length - MAX_SENDS);
+          this.syncSendCounts();
+          this.changed(true);
+        }
         const doc = instance.documents.get(Number(params.docId));
         const modified = method === "event/documentSaved" ? false : Boolean(params.modified);
         if (doc) doc.modified = modified;

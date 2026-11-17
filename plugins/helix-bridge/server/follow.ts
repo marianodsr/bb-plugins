@@ -9,6 +9,7 @@ import type { LocationItem, ReloadResult } from "../shared/protocol";
 import type { BoundInstance } from "./bridge";
 import { displayPath, rootsOf } from "./format";
 import type { HelixService } from "./service";
+import { type FileEdit, placesOf } from "./watch";
 
 type Sdk = BbPluginApi["sdk"];
 
@@ -84,8 +85,6 @@ export function diffHunks(diff: string, root: string): { item: LocationItem; key
   return items.slice(0, MAX_CHANGES);
 }
 
-const statusSchema = z.object({ outcome: z.string(), workspace: z.object({ checkout: z.object({ headSha: z.string().nullable().optional() }).passthrough() }).passthrough().optional() }).passthrough();
-const diffSchema = z.object({ outcome: z.string(), diff: z.object({ diff: z.string(), truncated: z.boolean() }).passthrough().optional() }).passthrough();
 
 export interface FollowDeps {
   sdk(): Sdk;
@@ -100,9 +99,8 @@ export interface FollowDeps {
 
 export class Follower {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly turnStartHead = new Map<string, string>();
-  /** Per thread: the hunks already uncommitted when its turn started. */
-  private readonly turnStartHunks = new Map<string, Set<string>>();
+  /** Per running turn: the agent's diffs by file, and Helix's own reload ranges. */
+  private readonly turns = new Map<string, { diffs: Map<string, string[]>; reloaded: Map<string, { start: { line: number }; end: { line: number; col: number } }[]> }>();
   readonly lastReload = new Map<string, { at: number; result: ReloadResult }>();
 
   constructor(private readonly deps: FollowDeps) {}
@@ -151,65 +149,78 @@ export class Follower {
     }
   }
 
-  private async head(environmentId: string): Promise<string | null> {
-    try {
-      const status = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "workspaceStatus", input: { environmentId }, outputSchema: statusSchema });
-      return status.workspace?.checkout.headSha ?? null;
-    } catch {
-      return null;
+
+
+  /** A turn starts: its changes list starts empty. No git: see onTurnEnd. */
+  onTurnStart(threadId: string): void {
+    this.turns.set(threadId, { diffs: new Map(), reloaded: new Map() });
+  }
+
+  /** An edit the agent made with its edit tools (the fileChange item's diff). */
+  noteEdit(edit: FileEdit): void {
+    const turn = this.turns.get(edit.threadId);
+    if (!turn) return;
+    for (const path of edit.paths) {
+      const diff = edit.diffs?.get(path);
+      turn.diffs.set(path, [...(turn.diffs.get(path) ?? []), ...(diff ? [diff] : [])]);
     }
   }
 
-  async onTurnStart(threadId: string, environmentId: string | null): Promise<void> {
-    if (!environmentId || this.serving(environmentId).length === 0) return;
-    const sha = await this.head(environmentId);
-    if (sha) this.turnStartHead.set(threadId, sha);
-    // Changes left from earlier turns (or the user) are not this turn's.
-    const info = await this.deps.service.threadInfo(threadId);
-    const before = info.path ? await this.diff(environmentId, { type: "uncommitted" }, info.path).catch(() => null) : null;
-    if (before) this.turnStartHunks.set(threadId, new Set(before.map((h) => h.key)));
+  /** Helix reloaded a file by itself during a turn (`watch`): shell edits included. */
+  noteReloaded(threadId: string | null, path: string, ranges: { start: { line: number }; end: { line: number; col: number } }[]): void {
+    const turn = threadId ? this.turns.get(threadId) : undefined;
+    if (turn) turn.reloaded.set(path, ranges);
   }
 
-  private async diff(environmentId: string, target: Record<string, string>, root: string): Promise<{ item: LocationItem; key: string }[] | null> {
-    const result = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "diff", input: { environmentId, target, maxDiffBytes: 2_000_000 }, outputSchema: diffSchema });
-    if (result.outcome !== "available" || !result.diff) return null;
-    return diffHunks(result.diff.diff, root);
-  }
-
+  /**
+   * The turn ended: the places it changed, from what the plugin saw during
+   * the turn (the agent's diffs, Helix's own reloads), located in each file's
+   * current text read once through Helix. No git: in a large repository a
+   * status or diff on every turn is a cost the user feels.
+   */
   async onTurnEnd(threadId: string, environmentId: string | null): Promise<void> {
+    const turn = this.turns.get(threadId);
+    this.turns.delete(threadId);
     if (!environmentId) return;
     const instances = this.serving(environmentId);
-    const start = this.turnStartHead.get(threadId) ?? null;
-    const before = this.turnStartHunks.get(threadId) ?? null;
-    this.turnStartHead.delete(threadId);
-    this.turnStartHunks.delete(threadId);
     if (instances.length === 0) return;
     const settings = await this.deps.settings();
     if (settings.autoReload) for (const instance of instances) await this.reload(instance);
-    if (!settings.followAgent) return;
-    const info = await this.deps.service.threadInfo(threadId);
-    if (!info.path) return;
-    const now = await this.head(environmentId);
-    const target: Record<string, string> = start && now && start !== now ? { type: "all", mergeBaseBranch: start } : { type: "uncommitted" };
-    let items: LocationItem[] = [];
-    try {
-      const hunks = await this.diff(environmentId, target, info.path);
-      if (!hunks) return;
-      // Both diffs are against the HEAD the turn started on, so a hunk that
-      // was already there is the same text.
-      items = hunks.filter((h) => !before?.has(h.key)).map((h) => h.item);
-    } catch (error) {
-      this.deps.log(`changes for ${threadId} failed: ${String(error)}`);
-      return;
+    if (!settings.followAgent || !turn || (turn.diffs.size === 0 && turn.reloaded.size === 0)) return;
+    const reader = instances.find((i) => i.summary.capabilities.includes("editor"));
+    if (!reader) return;
+    const items: LocationItem[] = [];
+    for (const path of new Set([...turn.diffs.keys(), ...turn.reloaded.keys()])) {
+      const diffs = turn.diffs.get(path) ?? [];
+      let placed: { line: number; endLine?: number; label: string }[] = [];
+      if (diffs.length > 0) {
+        const text = await this.deps.service.bridge.call<{ text: string }>(reader.key, "editor/text", { path }).then((r) => r.text, () => null);
+        if (text !== null) placed = diffs.flatMap((d) => placesOf(d, text));
+      }
+      if (placed.length === 0) {
+        // Reloaded by Helix (shell edits too): its last ranges for this file.
+        placed = (turn.reloaded.get(path) ?? []).map((r) => {
+          const last = r.end.col === 1 ? r.end.line - 1 : r.end.line;
+          return { line: r.start.line, ...(last > r.start.line ? { endLine: last } : {}), label: "changed" };
+        });
+      }
+      if (placed.length === 0) placed = [{ line: 1, label: "changed" }];
+      const seen = new Set<number>();
+      for (const p of placed.sort((a, b) => a.line - b.line)) {
+        if (seen.has(p.line)) continue;
+        seen.add(p.line);
+        items.push({ path, ...p });
+      }
+      if (items.length >= MAX_CHANGES) break;
     }
-    // A turn that changed nothing leaves the last list as it was.
-    if (items.length === 0 && before) return;
+    if (items.length === 0) return;
+    const info = await this.deps.service.threadInfo(threadId);
     const files = new Set(items.map((i) => i.path)).size;
     for (const instance of instances) {
       if (!instance.summary.capabilities.includes("locations")) continue;
       try {
-        await this.deps.service.bridge.call(instance.key, "locations/set", { list: "changes", title: `Agent changes: ${info.title ?? threadId}`, items, activate: items.length > 0 });
-        if (items.length > 0) await this.deps.service.status(instance, `Agent changed ${items.length} place${items.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} (:bb-next)`);
+        await this.deps.service.bridge.call(instance.key, "locations/set", { list: "changes", title: `Agent changes: ${info.title ?? threadId}`, items: items.slice(0, MAX_CHANGES), activate: true });
+        await this.deps.service.status(instance, `Agent changed ${items.length} place${items.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} (:bb-next)`);
       } catch (error) {
         this.deps.log(`locations/set on ${instance.key} failed: ${String(error)}`);
       }

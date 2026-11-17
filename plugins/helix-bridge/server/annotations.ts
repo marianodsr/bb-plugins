@@ -7,9 +7,10 @@
 // Comments come from Review Editor when it runs (comments made there or from
 // Helix), else from this plugin's own pending list. Review Editor calls
 // `commentsChanged` after every comment write, and that file is re-read at
-// once; everything is also re-read when this plugin changes a comment and
-// every 30 s as a fallback. A file is re-sent only when its items changed, or
-// to an instance that just connected or opened files.
+// once; everything is also re-read when this plugin changes a comment, and
+// when an instance connects or opens files. No timer. A file is re-sent only
+// when its items changed, or to an instance that just connected or opened
+// files.
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -22,7 +23,6 @@ import type { LocalComment, Store } from "./store";
 type Sdk = BbPluginApi["sdk"];
 
 export const NAMESPACE = "bb-review";
-const POLL_MS = 30_000;
 const MAX_TEXT = 2000;
 
 export interface AnnotationItem {
@@ -97,7 +97,6 @@ export class Annotator {
   private readonly sent = new Map<string, Map<string, string>>();
   /** Per instance: the open-document count last seen (opening files re-sends). */
   private readonly documents = new Map<string, number>();
-  private timer: ReturnType<typeof setInterval> | null = null;
   /** Every refresh runs on this chain, one at a time. */
   private chain: Promise<void> = Promise.resolve();
   private fullQueued = false;
@@ -105,12 +104,13 @@ export class Annotator {
   constructor(private readonly deps: AnnotatorDeps) {}
 
   start(): void {
-    this.timer ??= setInterval(() => void this.refresh(), POLL_MS);
+    // No timer: Review Editor calls commentsChanged after every comment write,
+    // this plugin refreshes after its own, and connecting or opening files
+    // re-sends everything.
+    void this.refresh();
   }
 
   dispose(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
   }
 
   /** Instances that show annotations, by environment. */

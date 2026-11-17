@@ -17,7 +17,7 @@ import { hunksFromDiff } from "../server/follow";
 import { selectionBlock } from "../server/sends";
 import { TOOL_NAMES } from "../server/tools";
 import { commentItems, type ReviewComment } from "../server/annotations";
-import { editedPaths, revealOf } from "../server/watch";
+import { editedPaths, placesOf, revealOf } from "../server/watch";
 import { OPENER_SCRIPT, treeYaziToml } from "../host/yazi";
 import { revParse as gitRevParse, subject as gitSubject } from "../host/git";
 import { execFile, execFileSync } from "node:child_process";
@@ -61,6 +61,8 @@ async function teardown() {
 }
 
 let capabilities: string[] | null = null;
+/** gitRead snapshots the fake host took (turn reviews). */
+let snapshots = 0;
 /** Settings for the next setup() (the agent tools are off by default). */
 let extraSettings: Record<string, string | number | boolean> = {};
 const ALL_TOOLS_ON = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true, toolEdit: true, toolPanes: true, toolCommand: true };
@@ -118,6 +120,10 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
           const rev = args.rev as string | undefined;
           if (args.op === "revParse") return { sha: rev ? await gitRevParse(cwd, rev) : null, error: null };
           if (args.op === "subject") return { subject: rev ? await gitSubject(cwd, rev) : "", error: null };
+          if (args.op === "snapshot") {
+            snapshots += 1;
+            return { base: await gitRevParse(cwd, "HEAD"), untracked: [], error: null };
+          }
           throw new Error(`unexpected gitRead ${String(args.op)}`);
         }
         default:
@@ -244,10 +250,14 @@ describe("reviews in the editor", () => {
     expect(review()).toMatchObject({ title: "This branch (feature) against main", files: [{ path: join(workspace, "main.go"), status: "modified" }] });
     expect(mock.control({ cmd: "state" }).lists).toMatchObject({ review: 1 });
     await until(() => /Reviewing This branch \(feature\) against main: 1 file, \+2 -1/u.test(String((mock.control({ cmd: "state" }).status as { message?: string } | null)?.message ?? "")));
-    // The agent adds a file: the same review grows, without a new id.
+    // A file is added and saved in Helix: the same review grows, without a
+    // new id. No timer: only signals (a save here) refresh it.
     const id = review()!.id;
     files = [...files, { path: "util.go", previousPath: null, changeKind: "added", additions: 9, deletions: 0 }];
-    await until(() => review()?.files.length === 2, 8000);
+    await wait(1500);
+    expect(review()!.files).toHaveLength(1);
+    mock.control({ cmd: "save", path: "main.go" });
+    await until(() => review()?.files.length === 2, 4000);
     expect(review()!.id).toBe(id);
     expect(mock.control({ cmd: "state" }).lists).toMatchObject({ review: 2 });
     // The page reads it.
@@ -267,10 +277,33 @@ describe("reviews in the editor", () => {
     expect(review()!.base).toBe(parent);
   });
 
+  it("snapshots the working tree at turn start only with reviewTurnSnapshots on", async () => {
+    await reviewSetup();
+    const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
+    fake.harness.sdk.stub("threads.events.list", async () => [] as never);
+    fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
+    snapshots = 0;
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    await wait(300);
+    expect(snapshots).toBe(0);
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    extraSettings = { reviewTurnSnapshots: true };
+    try {
+      await reviewSetup();
+    } finally {
+      extraSettings = {};
+    }
+    fake.harness.sdk.stub("threads.events.list", async () => [] as never);
+    fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    await until(() => snapshots === 1);
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+  });
+
   it("says why a review cannot start", async () => {
     await reviewSetup();
     expect((await fake.harness.behavior.runCli(["review", "pr"], { threadId: "thr_term" })).stderr).toMatch(/this branch has no pull request/u);
-    expect((await fake.harness.behavior.runCli(["review", "turn"], { threadId: "thr_term" })).stderr).toMatch(/no agent turn recorded/u);
+    expect((await fake.harness.behavior.runCli(["review", "turn"], { threadId: "thr_term" })).stderr).toMatch(/turn review needs the reviewTurnSnapshots setting/u);
     expect((await fake.harness.behavior.runCli(["review", "sideways"], { threadId: "thr_term" })).stderr).toMatch(/unknown review target "sideways"/u);
   });
 
@@ -604,37 +637,58 @@ describe("watching the agent write", () => {
     }
   });
 
-  it("lists at turn end only the hunks the turn added", async () => {
-    const hunk = (path: string, line: number, old: string, now: string) => [`--- a/${path}`, `+++ b/${path}`, `@@ -${line},1 +${line},1 @@`, `-${old}`, `+${now}`].join("\n");
-    const earlier = hunk("main.go", 3, "a", "b");
-    let diff = earlier;
+  it("lists at turn end the places the turn's edits changed, with no git", async () => {
+    const scratch = join(workspace, "scratch-turn.go");
+    writeFileSync(scratch, "package main\n\nfunc a() {}\n\nfunc b() {}\n");
+    const gitCalls: string[] = [];
     await teardown();
     await setup({ BB_THREAD_ID: "thr_term" }, {
       plugins: {
         list: async () => [],
-        callRpc: async ({ method }: { method: string }) => {
-          if (method === "workspaceStatus") return { outcome: "available", workspace: { checkout: { headSha: "abc" } } };
-          if (method === "diff") return { outcome: "available", diff: { diff, truncated: false } };
-          throw new Error(`unexpected ${method}`);
+        callRpc: async ({ pluginId, method }: { pluginId: string; method: string }) => {
+          gitCalls.push(`${pluginId} ${method}`);
+          throw new Error("no git on turns");
         },
       },
     });
-    const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
-    const lists = () => mock.control({ cmd: "state" }).lists as Record<string, number>;
-    fake.harness.sdk.stub("threads.events.list", async () => [] as never);
-    fake.harness.sdk.stub("threads.events.wait", async () => (await wait(50), null) as never);
-    // The turn adds one hunk to a diff that already had one.
-    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
-    await wait(100);
-    diff = `${earlier}\n${hunk("util.go", 7, "x", "y")}`;
-    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
-    await until(() => lists().changes === 1);
-    // A turn that changes nothing leaves that list alone.
-    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
-    await wait(100);
-    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
-    await wait(300);
-    expect(lists().changes).toBe(1);
+    try {
+      const thread = makeThreadResponse({ id: "thr_term", environmentId: "env_test" });
+      const lists = () => mock.control({ cmd: "state" }).lists as Record<string, number>;
+      let served = false;
+      fake.harness.sdk.stub("threads.events.list", async () => [{ seq: 40 }] as never);
+      fake.harness.sdk.stub("threads.events.wait", async ({ afterSeq }: { afterSeq?: string }) => {
+        if (afterSeq === "40" && !served) {
+          served = true;
+          writeFileSync(scratch, "package main\n\nfunc a() { x() }\n\nfunc b() {}\n\nfunc c() {}\n");
+          const diff = `--- a${scratch}\n+++ b${scratch}\n-func a() {}\n+func a() { x() }\n \n func b() {}\n+\n+func c() {}\n`;
+          return { seq: 41, createdAt: Date.now(), data: { item: { type: "fileChange", status: "completed", changes: [{ path: scratch, kind: "update", diff }] } } } as never;
+        }
+        await wait(50);
+        return null as never;
+      });
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+      await until(() => served);
+      await wait(300);
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+      await until(() => lists().changes === 2);
+      // A turn that changed nothing leaves that list alone.
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+      await wait(100);
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+      await wait(300);
+      expect(lists().changes).toBe(2);
+      expect(gitCalls.filter((c) => c.startsWith("bb--git"))).toEqual([]);
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+
+  it("places every changed block of a diff", () => {
+    const text = "a\nB\nc\nd\nE\nF\n";
+    expect(placesOf("--- a/x\n+++ b/x\n-b\n+B\n c\n d\n-e\n+E\n+F\n", text)).toEqual([{ line: 2, label: "+1 -1" }, { line: 5, endLine: 6, label: "+2 -1" }]);
+    expect(placesOf("--- /dev/null\n+++ b/x\n+a\n+b\n", "a\nb\n")).toEqual([{ line: 1, endLine: 2, label: "+2 new file" }]);
+    expect(placesOf("--- a/x\n+++ b/x\n-gone\n", text)).toEqual([]);
   });
 
   it("finds where a diff without line numbers landed", () => {

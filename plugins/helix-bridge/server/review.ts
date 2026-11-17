@@ -21,8 +21,9 @@ import type { HelixService } from "./service";
 
 type Sdk = BbPluginApi["sdk"];
 
-const REFRESH_MS = 4000;
 const DEBOUNCE_MS = 700;
+/** A turn snapshot slower than this is worth telling the owner about, once. */
+const SLOW_SNAPSHOT_MS = 1000;
 const MAX_FILES = 5000;
 const MAX_HUNKS = 2000;
 
@@ -91,6 +92,8 @@ export interface ReviewDeps {
   gitRead(hostId: string, input: { cwd: string; op: "revParse" | "subject" | "snapshot" | "changedFiles" | "diff"; rev?: string; exclude?: string[] }): Promise<{ sha?: string | null; subject?: string; base?: string | null; untracked?: string[]; files?: ReviewFile[]; diff?: string; error: string | null }>;
   /** A review started, changed or ended (the app reads reviewState again). */
   changed(threadId: string | null): void;
+  /** The `reviewTurnSnapshots` setting: snapshot the working tree at each turn start. */
+  turnSnapshots(): Promise<boolean>;
   log(message: string): void;
 }
 
@@ -129,7 +132,8 @@ export class Reviews {
   /** Per thread: the snapshot its last agent turn started from. */
   private readonly turnStarts = new Map<string, { base: string | null; untracked: string[]; at: number }>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private poll: ReturnType<typeof setInterval> | null = null;
+  /** The first snapshot that took longer than SLOW_SNAPSHOT_MS (for bb hx doctor). */
+  slowSnapshot: { ms: number; root: string } | null = null;
 
   constructor(private readonly deps: ReviewDeps) {}
 
@@ -146,8 +150,15 @@ export class Reviews {
 
   /** An agent turn starts: remember the working tree it starts from (`turn`). */
   async onTurnStart(threadId: string, hostId: string | null, root: string | null): Promise<void> {
-    if (!hostId || !root) return;
+    // `git stash create` walks the working tree: only when the owner asked for it.
+    if (!hostId || !root || !(await this.deps.turnSnapshots())) return;
+    const started = Date.now();
     const snap = await this.deps.gitRead(hostId, { cwd: root, op: "snapshot" }).catch(() => null);
+    const ms = Date.now() - started;
+    if (ms > SLOW_SNAPSHOT_MS && !this.slowSnapshot) {
+      this.slowSnapshot = { ms, root };
+      this.deps.log(`a turn snapshot for review took ${ms} ms in ${root}; turn reviews cost that at every agent turn (setting reviewTurnSnapshots)`);
+    }
     if (snap && !snap.error) this.turnStarts.set(threadId, { base: snap.base ?? null, untracked: snap.untracked ?? [], at: Date.now() });
   }
 
@@ -216,8 +227,9 @@ export class Reviews {
         return { title: `Commit ${sha.slice(0, 7)}${subject ? `: ${subject}` : ""}`, base: parent, files, hunks: await this.bbGitHunks(environmentId, t, root) };
       }
       case "turn": {
+        if (!(await this.deps.turnSnapshots())) throw new BridgeFailure("unsupported", "turn review needs the reviewTurnSnapshots setting (bb plugin config helix-bridge set reviewTurnSnapshots true); it snapshots the working tree at each agent turn");
         const start = instance.threadId ? this.turnStarts.get(instance.threadId) : undefined;
-        if (!start?.base) throw new BridgeFailure("not_found", "no agent turn recorded for this thread since Helix Bridge started; try uncommitted or branch");
+        if (!start?.base) throw new BridgeFailure("not_found", "no agent turn recorded for this thread since turn snapshots were turned on; try uncommitted or branch");
         const files = ((await git("changedFiles", start.base, start.untracked)).files ?? []) as ReviewFile[];
         const hunks = diffHunks((await git("diff", start.base)).diff ?? "", root).map((h) => h.item);
         // New files the turn created are not in a diff against a commit.
@@ -254,7 +266,6 @@ export class Reviews {
       startedAt: Date.now(),
     };
     this.active.set(instance.key, review);
-    this.ensurePoll();
     this.deps.changed(review.threadId);
     if (resolved.files.length === 0) return `${resolved.title}: no changes yet (the review follows new ones)`;
     return `Reviewing ${resolved.title}: ${resolved.files.length} file${resolved.files.length === 1 ? "" : "s"}, +${review.additions} -${review.deletions} (:bb-review to browse, :bb-next to walk)`;
@@ -265,10 +276,6 @@ export class Reviews {
     this.active.delete(instance.key);
     await this.deps.service.bridge.call(instance.key, "review/clear", {});
     await this.deps.service.bridge.call(instance.key, "locations/clear", { list: "review" }).catch(() => null);
-    if (this.active.size === 0 && this.poll) {
-      clearInterval(this.poll);
-      this.poll = null;
-    }
     this.deps.changed(review?.threadId ?? instance.threadId);
     return review ? `Review ended: ${review.title}` : "No review was active";
   }
@@ -289,7 +296,12 @@ export class Reviews {
     }
   }
 
-  /** Files or refs changed in an environment: refresh its active reviews soon. */
+  /**
+   * Refresh the active reviews in an environment soon. Only on signals the
+   * plugin already has: a Helix reload or save there, bb's environment change
+   * event, the end of an agent turn; and when the owner asks again. No timer:
+   * each refresh is a git status and diff, felt in a large repository.
+   */
   noteChange(environmentId: string): void {
     for (const review of this.active.values()) {
       if (review.environmentId !== environmentId) continue;
@@ -333,17 +345,7 @@ export class Reviews {
     }
   }
 
-  private ensurePoll(): void {
-    // Edits and ref moves are noticed through noteChange; this catches the rest
-    // (a commit made in a terminal, a rebase) without depending on watchers.
-    this.poll ??= setInterval(() => {
-      for (const key of [...this.active.keys()]) void this.refresh(key);
-    }, REFRESH_MS);
-  }
-
   dispose(): void {
-    if (this.poll) clearInterval(this.poll);
-    this.poll = null;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
   }

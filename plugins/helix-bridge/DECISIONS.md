@@ -347,3 +347,15 @@ conservatively. Newest last.
 58. **The handoff names the review**: with a review active, comments sent
     from Helix or the page go as Review Editor's compiled prompt with
     "Review of <title>." on top (compilePrompt, threads.send, markSent).
+59. **No background cost in large repositories** (supersedes the git parts
+    of 10, 39 and 56, and the 30 s fallback of 31): the turn-end changes list
+    is built from the turn's own edits (the `fileChange` diffs, placed in
+    the file's current text read once through Helix) and Helix's
+    `event/reloaded` ranges, with no git at turn start or end (it used to run
+    a status and a full diff at both). Turn snapshots for `:bb-review turn`
+    only with `reviewTurnSnapshots` (off), timed, with a doctor note when one
+    exceeds a second. An active review refreshes on a Helix save or reload
+    there, bb's environment change, a turn's end, or the same target asked
+    again; the 4 s timer is gone. The annotations' 30 s poll is gone (Review
+    Editor notifies every write). What remains on timers reads no
+    repository: the registry rescan (5 s) and the reconcile (30 s).

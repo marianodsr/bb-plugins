@@ -56,6 +56,7 @@ export default async function plugin(bb: BbPluginApi) {
     toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
     toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
     toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
+    reviewTurnSnapshots: { type: "boolean", label: "Review the last agent turn", description: "Snapshot the working tree when each agent turn starts, so :bb-review turn can show what that turn changed. Off by default: in a large repository the snapshot (git stash create) walks the working tree at every turn.", default: false },
     treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
@@ -118,10 +119,14 @@ export default async function plugin(bb: BbPluginApi) {
     filesRequested: (threadId, path) => bb.realtime.publish("files", { threadId, path, at: Date.now() }),
     reloaded: async (instance, event) => {
       if (instance.environmentId) reviews.noteChange(instance.environmentId);
+      if (event.origin === "watch" && typeof event.path === "string" && Array.isArray(event.ranges)) follower.noteReloaded(instance.threadId, event.path, event.ranges as never);
       await watcher.onReloaded(instance, event).catch((error: unknown) => bb.log.warn(`following a reload on ${instance.key} failed: ${String(error)}`));
     },
     reviewRequested: (instance, target) => reviews.start(instance, target),
     reviewTitle: (instance) => reviews.forInstance(instance.key)?.title ?? null,
+    saved: (instance) => {
+      if (instance.environmentId) reviews.noteChange(instance.environmentId);
+    },
     draftReady: (threadId) => {
       bb.rpc.experimental_invalidate([tags.drafts(threadId)]);
       bb.realtime.publish("draft", { threadId });
@@ -143,6 +148,7 @@ export default async function plugin(bb: BbPluginApi) {
     settings: () => settings.get(),
     log: (message) => bb.log.warn(message),
     timing: (edit, ms, instance) => bb.log.info(`agent edit in ${edit.paths.length} file(s) reached ${instance.key} ${ms} ms after bb recorded it`),
+    edited: (edit) => follower.noteEdit(edit),
   });
 
   // Which environments have a turn running, so file changes there count as agent edits.
@@ -160,6 +166,7 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     service,
     gitRead: async (hostId, input) => (await hostCall("gitRead", input as Record<string, unknown>, { hostId, timeoutMs: 20_000 })) as Awaited<ReturnType<ReviewDeps["gitRead"]>>,
+    turnSnapshots: async () => (await settings.get()).reviewTurnSnapshots,
     changed: (threadId) => {
       if (threadId) bb.rpc.experimental_invalidate([tags.review(threadId)]);
       bb.realtime.publish("review", { threadId, at: Date.now() });
@@ -395,6 +402,10 @@ export default async function plugin(bb: BbPluginApi) {
     // A file chosen in the tree went to Helix: the app moves focus there.
     treeOpened: (threadId) => bb.realtime.publish("tree-open", { threadId, at: Date.now() }),
     review: (instance, target) => reviews.start(instance, target, { interrupt: "always" }),
+    notes: () =>
+      reviews.slowSnapshot
+        ? [`warn  Turn snapshots: one took ${reviews.slowSnapshot.ms} ms in ${reviews.slowSnapshot.root}, at every agent turn while reviewTurnSnapshots is on\n      fix: bb plugin config helix-bridge set reviewTurnSnapshots false (turn review then needs it back)`]
+        : [],
   });
   registerTools(bb, service, { review: (instance, target) => reviews.start(instance, target) });
 
@@ -503,7 +514,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.active", ({ thread }) => {
     setActive(thread.id, thread.environmentId ?? null, true);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
-    void follower.onTurnStart(thread.id, thread.environmentId ?? null);
+    follower.onTurnStart(thread.id);
     // The snapshot `:bb-review turn` compares with, where a Helix that can
     // review serves this environment.
     const reviewable = bridge.list().some((i) => i.summary.status === "connected" && i.environmentId === thread.environmentId && i.summary.capabilities.includes("review"));
@@ -513,6 +524,8 @@ export default async function plugin(bb: BbPluginApi) {
     setActive(thread.id, thread.environmentId ?? null, false);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     void follower.onTurnEnd(thread.id, thread.environmentId ?? null);
+    // An active review there catches up with what the turn did.
+    if (thread.environmentId) reviews.noteChange(thread.environmentId);
   });
   for (const event of ["thread.archived", "thread.deleted", "thread.created"] as const) bb.events.on(event, ({ thread }) => bridge.threadActivity(thread.id, thread.environmentId ?? null));
 

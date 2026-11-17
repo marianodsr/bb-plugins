@@ -76,6 +76,8 @@ export interface CliHooks {
   treeOpened?(threadId: string): void;
   /** Start or end a review; the status text. */
   review?(instance: BoundInstance, target: string): Promise<string>;
+  /** Lines for bb hx doctor about this bb's own costs (a slow turn snapshot). */
+  notes?(): string[];
 }
 
 export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHooks = {}): void {
@@ -373,6 +375,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHo
               const lines = result.checks.map((c) => `${mark[c.level]}  ${c.label}: ${c.detail}${c.fix ? `\n      fix: ${c.fix}` : ""}`);
               const failed = result.checks.some((c) => c.level === "error");
               lines.unshift(`Machine ${result.hostId}`);
+              lines.push(...(hooks.notes?.() ?? []));
               return { exitCode: failed ? 1 : 0, stdout: lines.join("\n") };
             });
           },

@@ -40,6 +40,35 @@ none. The tools still exist for those who want them: settings `toolShow`,
 `toolCommand`, `toolEdit` (all off; `skills/helix-bridge/tools.md` covers
 them).
 
+## Reviews
+
+`:bb-review <target>` in Helix, the review control on the editor page, or
+the palette ("Helix: review changes in the editor") compares the files with
+a base and draws the diff in Helix: `uncommitted`, `branch`, `pr`, `commit
+<sha>`, `off`; `turn` (what the last agent turn changed) needs the
+`reviewTurnSnapshots` setting, off by default, because it snapshots the
+working tree (`git stash create`) at every agent turn. An active review is
+refreshed only when something happens: a save or a reload in Helix in that
+workspace, bb's environment-change event, the end of an agent turn, or
+asking for the same target again. Never on a timer.
+
+## What runs in the background
+
+Kept small for very large repositories: nothing reads the working tree on a
+timer or on every turn.
+
+- Every 5 s the machine lists Helix's bridge directory (a few small files),
+  and every 30 s the server reconciles instances and bindings. Neither
+  touches the repository.
+- While an agent turn runs in a workspace a Helix serves, the plugin follows
+  the turn's events from bb (no repository reads) and, per edit, asks Helix
+  to reload or show that file. The changes list at the end of the turn is
+  built from those edits and Helix's own reloads, with one read of each
+  edited file through Helix; no git.
+- Git runs only for what you start: a review (`bb--git` files and diff, on
+  the signals above), `turn` snapshots if you turned them on (`bb hx doctor`
+  says so if one takes over a second), and `bb hx` commands you run.
+
 ## Keys in Helix
 
 The bridge's commands have no keys of their own; bind them in

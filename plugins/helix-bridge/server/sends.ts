@@ -53,6 +53,8 @@ export interface SendDeps {
   filesRequested?(threadId: string, path: string | null): void;
   /** The review active in this Helix, to name it when its comments go to the agent. */
   reviewTitle?(instance: BoundInstance): string | null;
+  /** The user saved a buffer in Helix. */
+  saved?(instance: BoundInstance): void;
   /** Helix reloaded a buffer (`event/reloaded`). */
   reloaded?(instance: BoundInstance, event: Record<string, unknown>): Promise<void>;
   /** `:bb-review <target>`: start or end a review. Returns the status-line text. */
@@ -104,6 +106,10 @@ export class SendHandler {
   async handle(record: SendRecord, instance: BoundInstance | null): Promise<string> {
     if (!instance) return "dropped: the instance is gone";
     const kind = (record.event as { kind?: unknown }).kind;
+    if (kind === "saved") {
+      this.deps.saved?.(instance);
+      return "saved";
+    }
     if (kind === "reloaded") {
       await this.deps.reloaded?.(instance, record.event);
       return "reloaded";
