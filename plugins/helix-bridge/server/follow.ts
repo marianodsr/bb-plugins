@@ -16,28 +16,66 @@ const RELOAD_DEBOUNCE_MS = 400;
 const WATCHED_DEBOUNCE_MS = 2500;
 const MAX_CHANGES = 2000;
 
-/** New-side hunks of a unified diff as location items. Deleted files are skipped. */
+/**
+ * Changed lines of a unified diff as location items, one per hunk. The span
+ * and the `+a -r` label count the changed lines only, not the context git
+ * puts around them (a hunk without a body, as `-U0` headers alone, uses the
+ * header's counts). Deleted files are skipped.
+ */
 export function hunksFromDiff(diff: string, root: string): LocationItem[] {
   const items: LocationItem[] = [];
   let path: string | null = null;
+  let hunk: { start: number; added: number; removed: number; body: string[] } | null = null;
+  const finish = () => {
+    if (!hunk || !path) return;
+    let line = hunk.start;
+    let first: number | null = null;
+    let last: number | null = null;
+    let added = 0;
+    let removed = 0;
+    for (const body of hunk.body) {
+      if (body.startsWith("+")) {
+        first ??= line;
+        last = line;
+        added += 1;
+        line += 1;
+      } else if (body.startsWith("-")) {
+        first ??= line;
+        removed += 1;
+      } else if (body.startsWith(" ") || body === "") line += 1;
+    }
+    if (added === 0 && removed === 0) {
+      ({ added, removed } = hunk);
+      first = hunk.start;
+      last = added > 0 ? hunk.start + added - 1 : null;
+    }
+    const label = `+${added} -${removed}`;
+    // A pure deletion has no new lines; point at the line after it.
+    items.push(added > 0 && last !== null ? { path, line: first ?? hunk.start, endLine: last, label } : { path, line: Math.max(1, first ?? hunk.start), label });
+    hunk = null;
+  };
   for (const line of diff.split("\n")) {
+    if (items.length >= MAX_CHANGES) break;
+    if (line.startsWith("diff --git ") || line.startsWith("--- ")) {
+      finish();
+      continue;
+    }
     if (line.startsWith("+++ ")) {
+      finish();
       const target = line.slice(4).trim();
       path = target === "/dev/null" ? null : `${root.replace(/\/$/u, "")}/${target.replace(/^b\//u, "")}`;
       continue;
     }
-    if (!path || !line.startsWith("@@")) continue;
     const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
-    if (!match) continue;
-    const removed = match[2] === undefined ? 1 : Number(match[2]);
-    const start = Number(match[3]);
-    const added = match[4] === undefined ? 1 : Number(match[4]);
-    const label = `+${added} -${removed}`;
-    // A pure deletion has no new lines; point at the line after it.
-    items.push(added > 0 ? { path, line: start, endLine: start + added - 1, label } : { path, line: Math.max(1, start), label });
-    if (items.length >= MAX_CHANGES) break;
+    if (match) {
+      finish();
+      if (path) hunk = { start: Number(match[3]), removed: match[2] === undefined ? 1 : Number(match[2]), added: match[4] === undefined ? 1 : Number(match[4]), body: [] };
+      continue;
+    }
+    if (hunk && !line.startsWith("\\")) hunk.body.push(line);
   }
-  return items;
+  finish();
+  return items.slice(0, MAX_CHANGES);
 }
 
 const statusSchema = z.object({ outcome: z.string(), workspace: z.object({ checkout: z.object({ headSha: z.string().nullable().optional() }).passthrough() }).passthrough().optional() }).passthrough();

@@ -17,7 +17,7 @@ import { hunksFromDiff } from "../server/follow";
 import { selectionBlock } from "../server/sends";
 import { TOOL_NAMES } from "../server/tools";
 import { commentItems, type ReviewComment } from "../server/annotations";
-import { editedPaths } from "../server/watch";
+import { editedPaths, revealOf } from "../server/watch";
 // @ts-expect-error plain ESM test helper without types
 import { startMockBridge } from "./mock-bridge/mock.mjs";
 
@@ -368,6 +368,40 @@ describe("watching the agent write", () => {
     }
   });
 
+  it("opens a file that is not open where the agent wrote, with the reveal", async () => {
+    const scratch = join(workspace, "scratch-unopened.go");
+    writeFileSync(scratch, "package main\n\nfunc old() {}\n");
+    try {
+      let served = false;
+      fake.harness.sdk.stub("threads.events.list", async () => [{ seq: 20 }] as never);
+      fake.harness.sdk.stub("threads.events.wait", async ({ afterSeq }: { afterSeq?: string }) => {
+        if (afterSeq === "20" && !served) {
+          served = true;
+          writeFileSync(scratch, "package main\n\nfunc renamed() {}\n");
+          const diff = `--- a${scratch}\n+++ b${scratch}\n-func old() {}\n+func renamed() {}\n`;
+          return { seq: 21, createdAt: Date.now(), data: { item: { type: "fileChange", status: "completed", changes: [{ path: scratch, kind: "update", diff }] } } } as never;
+        }
+        await wait(50);
+        return null as never;
+      });
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }) });
+      const reveal = await until(() => (mock.control({ cmd: "state" }).reveals as { paths: string[]; ranges?: unknown; follow: boolean }[]).find((r) => r.paths[0] === scratch && r.ranges));
+      expect(reveal).toMatchObject({ follow: true, ranges: [{ start: { line: 3, col: 1 }, end: { line: 4, col: 1 } }], removed: [{ line: 3, text: "func old() {}" }] });
+      expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(scratch);
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }), lastAssistantText: null });
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+  it("finds where a diff without line numbers landed", () => {
+    const text = "a\nb\nnew one\nnew two\nc\n";
+    expect(revealOf("--- a/x\n+++ b/x\n-old\n+new one\n+new two\n", text)).toEqual({ ranges: [{ start: { line: 3, col: 1 }, end: { line: 5, col: 1 } }], removed: [{ line: 3, text: "old" }] });
+    expect(revealOf("--- /dev/null\n+++ b/x\n+a\n+b\n", text)?.ranges[0]).toEqual({ start: { line: 1, col: 1 }, end: { line: 7, col: 1 } });
+    expect(revealOf("--- a/x\n+++ b/x\n-gone\n", text)).toBeNull();
+    expect(revealOf("--- a/x\n+++ b/x\n+not there\n", text)).toBeNull();
+  });
+
   it("reloads without the reveal when Helix does not offer it", async () => {
     await teardown();
     dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
@@ -399,6 +433,9 @@ describe("watching the agent write", () => {
   it("names the files a completed edit wrote, and nothing else", () => {
     expect(editedPaths(fileChange("/w/a.go"), "/w")).toEqual(["/w/a.go"]);
     expect(editedPaths(fileChange("b.go"), "/w")).toEqual(["/w/b.go"]);
+    // macOS: the agent reports the resolved path, Helix and bb the environment's.
+    expect(editedPaths(fileChange("/private/tmp/w/a.go"), "/tmp/w")).toEqual(["/tmp/w/a.go"]);
+    expect(editedPaths(fileChange("/tmp/w/a.go"), "/private/tmp/w")).toEqual(["/private/tmp/w/a.go"]);
     expect(editedPaths(fileChange("/w/a.go", "pending"), "/w")).toBeNull();
     expect(editedPaths({ type: "commandExecution", status: "completed" }, "/w")).toBeNull();
     expect(editedPaths({ type: "fileChange", status: "completed", changes: [{ path: "/w/gone.go", kind: "delete" }] }, "/w")).toBeNull();
@@ -509,6 +546,9 @@ describe("helpers", () => {
       { path: "/repo/x.go", line: 3, endLine: 6, label: "+4 -2" },
       { path: "/repo/x.go", line: 42, label: "+0 -1" },
     ]);
+    // With git's context lines, the span and the label cover the change only.
+    const context = ["--- a/main.go", "+++ b/main.go", "@@ -2,7 +2,7 @@", " ", " import \"fmt\"", " ", "-// old", "+// new", " type Greeter struct {", " \tname string", " }"].join("\n");
+    expect(hunksFromDiff(context, "/repo")).toEqual([{ path: "/repo/main.go", line: 5, endLine: 5, label: "+1 -1" }]);
   });
 
   it("formats a send as path and lines, fenced code, unsaved note", () => {

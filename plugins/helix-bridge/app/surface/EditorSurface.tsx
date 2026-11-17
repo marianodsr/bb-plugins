@@ -210,6 +210,8 @@ function Session({
           return;
         }
         renderer = created;
+        // With the HUD on, drivers can also read the screen (status line included).
+        if (meter) (window as unknown as { __helixScreen?: () => Promise<string> }).__helixScreen = () => created.term.readText();
         removeKeys = installKeyLayer(element, {
           optionAsAlt: () => optionRef.current,
           kittyFlags: () => created.kittyFlags(),

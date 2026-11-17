@@ -28,8 +28,23 @@ export interface FileEdit {
   threadId: string;
   environmentId: string;
   paths: string[];
+  /** Absolute path -> the item's diff for it (`-`/`+` lines, no line numbers). */
+  diffs?: Map<string, string>;
   /** When bb recorded the edit (ms). */
   at: number;
+}
+
+/**
+ * An edited path as Helix knows it. Agents may report the resolved path
+ * (`/private/tmp/...` on macOS) while Helix and bb use the environment's own
+ * (`/tmp/...`), and Helix treats the two as different buffers.
+ */
+export function underRoot(path: string, root: string | null): string {
+  const absolute = isAbsolute(path) ? normalize(path) : root ? normalize(join(root, path)) : path;
+  if (!root || absolute.startsWith(`${root}/`)) return absolute;
+  if (absolute.startsWith(`/private${root}/`)) return absolute.slice("/private".length);
+  if (root.startsWith("/private/") && absolute.startsWith(`${root.slice("/private".length)}/`)) return `/private${absolute}`;
+  return absolute;
 }
 
 /** The files a completed `fileChange` item wrote, absolute (relative ones resolve against `root`). */
@@ -42,9 +57,67 @@ export function editedPaths(item: unknown, root: string | null): string[] | null
     const path = (change as { path?: unknown; kind?: unknown })?.path;
     if (typeof path !== "string" || !path) continue;
     if ((change as { kind?: unknown }).kind === "delete") continue;
-    paths.add(isAbsolute(path) ? normalize(path) : root ? normalize(join(root, path)) : path);
+    paths.add(underRoot(path, root));
   }
   return paths.size > 0 ? [...paths] : null;
+}
+
+/** The diff of each file a completed `fileChange` item wrote, by absolute path. */
+export function editedDiffs(item: unknown, root: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  const changes = (item as { changes?: unknown })?.changes;
+  if (!Array.isArray(changes)) return out;
+  for (const change of changes) {
+    const { path, kind, diff } = (change ?? {}) as { path?: unknown; kind?: unknown; diff?: unknown };
+    if (typeof path !== "string" || !path || kind === "delete" || typeof diff !== "string") continue;
+    out.set(underRoot(path, root), diff);
+  }
+  return out;
+}
+
+interface Range {
+  start: { line: number; col: number };
+  end: { line: number; col: number };
+}
+
+/**
+ * Where a diff's added text sits in the file now, for `editor/reveal`. The
+ * diffs bb records carry `-`/`+` lines without line numbers, so the first
+ * block of added lines is looked up in the current text (the whole file, up
+ * to 200 lines, for a new one). Null when it cannot be found.
+ */
+export function revealOf(diff: string, text: string): { ranges: Range[]; removed: { line: number; text: string }[] } | null {
+  const body = diff.split("\n").filter((l) => !l.startsWith("--- ") && !l.startsWith("+++ "));
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (const line of body) {
+    if (line.startsWith("+")) added.push(line.slice(1));
+    else if (line.startsWith("-") && added.length === 0) removed.push(line.slice(1));
+    else if (added.length > 0) break;
+  }
+  const lines = text.split("\n");
+  if (added.length === 0) return null;
+  if (/^--- \/dev\/null/mu.test(diff)) {
+    const last = Math.min(lines.length, 200);
+    return { ranges: [{ start: { line: 1, col: 1 }, end: { line: last + 1, col: 1 } }], removed: [] };
+  }
+  for (let i = 0; i + added.length <= lines.length; i += 1) {
+    if (added.every((a, j) => lines[i + j] === a)) {
+      const start = i + 1;
+      return {
+        ranges: [{ start: { line: start, col: 1 }, end: { line: start + added.length, col: 1 } }],
+        removed: removed.length > 0 ? [{ line: start, text: removed.join("\n") }] : [],
+      };
+    }
+  }
+  return null;
+}
+
+interface ReloadOutcome {
+  reloaded: string[];
+  unchanged: string[];
+  skippedModified: string[];
+  missing: string[];
 }
 
 export interface WatchDeps {
@@ -118,7 +191,7 @@ export class AgentWatcher {
       afterSeq = String(row.seq);
       const paths = editedPaths(row.data?.item, root);
       if (!paths) continue;
-      await this.onEdit({ threadId, environmentId, paths, at: typeof row.createdAt === "number" ? row.createdAt : Date.now() });
+      await this.onEdit({ threadId, environmentId, paths, diffs: editedDiffs(row.data?.item, root), at: typeof row.createdAt === "number" ? row.createdAt : Date.now() });
     }
   }
 
@@ -131,16 +204,35 @@ export class AgentWatcher {
       const caps = new Set(instance.summary.capabilities);
       if (!caps.has("reload")) continue;
       const reveal = caps.has("reveal");
+      const follow = reveal && settings.followAgent;
       try {
-        await this.deps.service.bridge.call(instance.key, "editor/reload", {
+        const result = await this.deps.service.bridge.call<ReloadOutcome>(instance.key, "editor/reload", {
           paths: edit.paths,
           ...(reveal ? { reveal: true } : {}),
-          ...(reveal && settings.followAgent ? { follow: true, interrupt: "whenIdle" } : {}),
+          ...(follow ? { follow: true, interrupt: "whenIdle" } : {}),
         });
         this.deps.timing?.(edit, Date.now() - edit.at, instance);
+        // A file that is not open is in none of the lists. Following, open it
+        // where the agent wrote and play the reveal there (editor/reveal with
+        // follow opens it); reloads that moved the view win.
+        if (follow && result.reloaded.length === 0) await this.revealUnopened(instance, edit, result);
       } catch (error) {
         this.deps.log(`reload after an agent edit on ${instance.key} failed: ${String(error)}`);
       }
+    }
+  }
+
+  private async revealUnopened(instance: BoundInstance, edit: FileEdit, result: ReloadOutcome): Promise<void> {
+    const listed = new Set([...result.reloaded, ...result.unchanged, ...result.skippedModified, ...result.missing]);
+    for (const path of edit.paths) {
+      if (listed.has(path)) continue;
+      const diff = edit.diffs?.get(path);
+      if (!diff) continue;
+      const { text } = await this.deps.service.bridge.call<{ text: string }>(instance.key, "editor/text", { path });
+      const reveal = revealOf(diff, text);
+      if (!reveal) continue;
+      await this.deps.service.bridge.call(instance.key, "editor/reveal", { path, ...reveal, follow: true, interrupt: "whenIdle" });
+      return;
     }
   }
 }
