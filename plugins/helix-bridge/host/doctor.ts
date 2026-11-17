@@ -138,6 +138,28 @@ export async function runDoctor(input: {
     checks.push({ id: tool, label: tool, ok: path !== null, level: path ? "ok" : "warn", detail: path ?? `not on PATH; Go files get no ${tool === "gopls" ? "language server" : "import fixing"}`, fix: path ? null : fix });
   }
 
+  // bb's terminal answers the device-attributes query itself before the
+  // editor surface can report Kitty keyboard support, so Helix's automatic
+  // detection always picks the legacy encoding inside bb.
+  const helixConfig = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "helix", "config.toml");
+  let kitty: string | null = null;
+  try {
+    kitty = /^\s*kitty-keyboard-protocol\s*=\s*"?(\w+)"?/mu.exec(readFileSync(helixConfig, "utf8"))?.[1] ?? null;
+  } catch {
+    kitty = null;
+  }
+  checks.push({
+    id: "kitty",
+    label: "Kitty keyboard protocol",
+    ok: kitty === "enabled",
+    level: kitty === "enabled" ? "ok" : "warn",
+    detail:
+      kitty === "enabled"
+        ? "enabled in your Helix config"
+        : "not enabled: inside bb, Helix cannot detect it, so Ctrl+i/Tab, Ctrl+[/Escape and Shift+Enter are not told apart (Alt chords work either way)",
+    fix: kitty === "enabled" ? null : `add kitty-keyboard-protocol = "enabled" under [editor] in ${helixConfig} (this plugin never edits it)`,
+  });
+
   if (input.fontFamily) {
     const installed = await fontInstalled(input.fontFamily);
     checks.push({
@@ -149,6 +171,14 @@ export async function runDoctor(input: {
       fix: installed ? null : `brew install --cask font-${fontTokens(input.fontFamily).filter((t) => t !== "mono" && t !== "font").join("-")}-nerd-font`,
     });
   }
+  checks.push({
+    id: "tools",
+    label: "Agent tools",
+    ok: true,
+    level: "ok",
+    detail: "an agent session gets the helix_* tools when it starts with a connected Helix serving its thread; a thread that started earlier gets them in its next session",
+    fix: null,
+  });
   return { checks, hxbResolved: resolved, hxbVersion: version };
 }
 

@@ -301,6 +301,15 @@ export default async function plugin(bb: BbPluginApi) {
 
   // ----- background ------------------------------------------------------------
 
+  // Which environments have a turn running, so file changes there count as agent edits.
+  const activeByEnvironment = new Map<string, Set<string>>();
+  const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
+    if (!environmentId) return;
+    const set = activeByEnvironment.get(environmentId) ?? new Set<string>();
+    if (active) set.add(threadId);
+    else set.delete(threadId);
+    activeByEnvironment.set(environmentId, set);
+  };
   bb.background.service("reconcile", {
     async start(signal) {
       while (!signal.aborted) {
@@ -320,6 +329,16 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("environment-changes", {
     async start(signal) {
+      // Turns already running when this plugin (re)loaded.
+      try {
+        const running = await bb.sdk.threads.listRunning();
+        if (running.length > 0) {
+          const threads = await bb.sdk.threads.list({ threadIds: running.map((t) => t.id).slice(0, 200) });
+          for (const thread of threads) setActive(thread.id, thread.environmentId ?? null, true);
+        }
+      } catch (error) {
+        bb.log.warn(`could not read running threads: ${String(error)}`);
+      }
       const unsubscribe = bb.sdk.subscribe({
         event: "environment:changed",
         callback: (event) => {
@@ -339,15 +358,6 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // Which environments have a turn running, so file changes there count as agent edits.
-  const activeByEnvironment = new Map<string, Set<string>>();
-  const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
-    if (!environmentId) return;
-    const set = activeByEnvironment.get(environmentId) ?? new Set<string>();
-    if (active) set.add(threadId);
-    else set.delete(threadId);
-    activeByEnvironment.set(environmentId, set);
-  };
   bb.events.on("thread.failed", ({ thread }) => setActive(thread.id, thread.environmentId ?? null, false));
   bb.events.on("thread.active", ({ thread }) => {
     setActive(thread.id, thread.environmentId ?? null, true);
