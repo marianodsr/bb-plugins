@@ -488,6 +488,8 @@ function Session({
     );
     const meter = entry.meter;
     if (meter) (window as unknown as { __helixHud?: HudMeter }).__helixHud = meter;
+    // With the HUD on, drivers can time the plugin's own RPCs.
+    if (meter) (window as unknown as { __helixRpc?: typeof rpc }).__helixRpc = rpc;
     const hudTimer = meter
       ? window.setInterval(() => {
           const snapshot = meter.snapshot();

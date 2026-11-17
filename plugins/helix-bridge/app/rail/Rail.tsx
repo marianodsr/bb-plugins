@@ -71,6 +71,12 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
   const tab = useRailTab();
   const root = useRef<HTMLDivElement>(null);
   const treeHandle = useRef<TreeHandle | null>(null);
+  // The tree stays mounted once shown, so coming back to Files is instant
+  // (yazi and its surface stay attached).
+  const [filesShown, setFilesShown] = useState(tab === "files");
+  useEffect(() => {
+    if (tab === "files") setFilesShown(true);
+  }, [tab]);
   const { data } = useChanges(threadId);
   const files = data?.review?.files;
   const unviewed = useMemo(() => files?.filter((f) => !f.viewed).length ?? 0, [files]);
@@ -156,7 +162,11 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       <RailHeader threadId={threadId} />
       <RailTabs value={tab} onChange={show} options={options} />
       <div className={cn("relative flex min-h-0 flex-1 flex-col", tab !== "files" && "pt-2")}>
-        {tab === "files" ? <FilesTab threadId={threadId} handle={treeHandle} onLeave={onLeave} /> : null}
+        {filesShown ? (
+          <div className={cn("flex min-h-0 flex-1", tab !== "files" && "hidden")}>
+            <FilesTab threadId={threadId} handle={treeHandle} onLeave={onLeave} />
+          </div>
+        ) : null}
         {tab === "changes" ? <ChangesTab threadId={threadId} active root={root} onLeave={onLeave} /> : null}
         {tab === "comments" ? <CommentsTab threadId={threadId} onLeave={onLeave} /> : null}
       </div>
