@@ -46,6 +46,7 @@ export default async function plugin(bb: BbPluginApi) {
     hxbPath: { type: "string", label: "Editor binary", description: "The Helix fork to run, a name on PATH or an absolute path.", default: "hxb" },
     autoReload: { type: "boolean", label: "Reload buffers when files change", description: "Reload Helix's unchanged buffers when bb sees files change. Buffers with unsaved changes are never touched.", default: true },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
+    treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
     fontFamily: { type: "string", label: "Editor font", description: "Overrides the font from your Ghostty config. Empty uses Ghostty's.", default: "" },
@@ -103,6 +104,8 @@ export default async function plugin(bb: BbPluginApi) {
     service,
     store,
     commentsChanged: () => void annotator.refresh(),
+    // :bb-files: the editor page for that thread shows its tree on the file.
+    filesRequested: (threadId, path) => bb.realtime.publish("files", { threadId, path, at: Date.now() }),
     draftReady: (threadId) => {
       bb.rpc.experimental_invalidate([tags.drafts(threadId)]);
       bb.realtime.publish("draft", { threadId });

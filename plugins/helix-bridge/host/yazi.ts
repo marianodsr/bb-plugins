@@ -50,7 +50,9 @@ for f in "$@"; do
 "
 done
 if command -v nc >/dev/null 2>&1; then
-  out=$(printf '%s' "$msg" | nc -U -w 1 "$sock" 2>/dev/null)
+  # nc quits as soon as its input ends, before Helix answers: hold the input
+  # open a moment (this script runs detached; the file opens at once anyway).
+  out=$({ printf '%s' "$msg"; sleep 1; } | nc -U -w 2 "$sock" 2>/dev/null)
 elif command -v python3 >/dev/null 2>&1; then
   out=$(printf '%s' "$msg" | python3 -c 'import socket,sys
 s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1]); s.sendall(sys.stdin.buffer.read())

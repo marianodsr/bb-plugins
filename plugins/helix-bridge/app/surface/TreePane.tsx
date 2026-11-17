@@ -29,9 +29,16 @@ export function isTerminalReply(data: string): boolean {
   return /^\x1b[\]P_^]/u.test(data) || /^\x1b\[[?>=][\d;:]*\$?[a-zA-Z]$/u.test(data) || /^\x1b\[\d+;\d+R$/u.test(data) || /^\x1b\[\d+;\d+;\d+t$/u.test(data);
 }
 
+/** Keys that open the hovered entry in yazi's default keymap. */
+const OPEN_KEYS = new Set(["Enter", "l", "o", "O", "ArrowRight"]);
+/** A focus change in Helix this soon after an opening key came from the tree. */
+const OPENED_WINDOW_MS = 2000;
+
 export interface TreeHandle {
   focus(): void;
   focused(): boolean;
+  /** Show this file now (`:bb-files`), whatever the user did last. */
+  reveal(path: string): void;
 }
 
 export function TreePane({
@@ -41,6 +48,7 @@ export function TreePane({
   handle,
   onQuit,
   onOpened,
+  onReady,
 }: {
   threadId: string;
   width: number;
@@ -50,6 +58,8 @@ export function TreePane({
   onQuit(): void;
   /** A file chosen here was opened in Helix: focus the editor. */
   onOpened(): void;
+  /** The tree is drawn and accepts commands. */
+  onReady?(): void;
 }) {
   const rpc = useHelixRpc();
   const sdk = useSdk();
@@ -63,7 +73,10 @@ export function TreePane({
   onQuitRef.current = onQuit;
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
   const lastKeyAt = useRef(0);
+  const lastOpenAt = useRef(0);
   const ready = useRef(false);
   const lastPath = useRef<string | null>(null);
   const revealTimer = useRef<number | null>(null);
@@ -94,8 +107,14 @@ export function TreePane({
     };
   }, [rpc, threadId]);
 
-  const reveal = (path: string) => {
+  const reveal = (path: string, force = false) => {
     if (revealTimer.current !== null) window.clearTimeout(revealTimer.current);
+    if (force) {
+      lastPath.current = path;
+      lastKeyAt.current = 0;
+      if (ready.current) void rpc.call("treeReveal", { threadId, path }).catch(() => {});
+      return;
+    }
     revealTimer.current = window.setTimeout(() => {
       revealTimer.current = null;
       const element = host.current;
@@ -112,6 +131,13 @@ export function TreePane({
     const path = mine?.absolutePath ?? null;
     if (!path || path === lastPath.current) return;
     lastPath.current = path;
+    // The file was just chosen here (the opener talks to Helix directly):
+    // nothing to reveal; the surface moves on to the editor.
+    if (Date.now() - lastOpenAt.current < OPENED_WINDOW_MS) {
+      lastOpenAt.current = 0;
+      onOpenedRef.current();
+      return;
+    }
     reveal(path);
   });
   useRealtime("tree-open", (payload: unknown) => {
@@ -129,7 +155,8 @@ export function TreePane({
         if (next === "open")
           window.setTimeout(() => {
             ready.current = true;
-            if (lastPath.current) reveal(lastPath.current);
+            if (lastPath.current) reveal(lastPath.current, true);
+            onReadyRef.current?.();
           }, 600);
       },
       // yazi quit (any exit): close its session and hide the pane; Helix stays.
@@ -146,9 +173,17 @@ export function TreePane({
       const { cols, rows } = renderer.size();
       stream.resize(cols, rows, true);
     };
-    const onKey = () => (lastKeyAt.current = Date.now());
+    const onKey = (event: KeyboardEvent) => {
+      lastKeyAt.current = Date.now();
+      if (OPEN_KEYS.has(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) lastOpenAt.current = Date.now();
+    };
+    const onPointer = () => {
+      lastKeyAt.current = Date.now();
+      lastOpenAt.current = Date.now();
+    };
     element.addEventListener("focusin", claim);
     element.addEventListener("keydown", onKey, true);
+    element.addEventListener("pointerdown", onPointer, true);
     let removeKeys: (() => void) | null = null;
     void createRenderer(element, {
       wasmUrl: WASM_URL,
@@ -170,7 +205,7 @@ export function TreePane({
           return;
         }
         renderer = created;
-        handle.current = { focus: () => created.focus(), focused: () => element.contains(document.activeElement) };
+        handle.current = { focus: () => created.focus(), focused: () => element.contains(document.activeElement), reveal: (path) => reveal(path, true) };
         removeKeys = installKeyLayer(element, {
           optionAsAlt: () => optionRef.current,
           kittyFlags: () => created.kittyFlags(),
@@ -189,6 +224,7 @@ export function TreePane({
       if (revealTimer.current !== null) window.clearTimeout(revealTimer.current);
       element.removeEventListener("focusin", claim);
       element.removeEventListener("keydown", onKey, true);
+      element.removeEventListener("pointerdown", onPointer, true);
       removeKeys?.();
       stream.close();
       renderer?.dispose();

@@ -4,7 +4,7 @@
 // editor page and the thread's Helix tab); only the focused one sends resize,
 // so they never fight over the size.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { experimental_copyToClipboard as copyToClipboard, experimental_usePluginId as usePluginId, useSdk } from "@get-bb/plugin-sdk/app";
+import { experimental_copyToClipboard as copyToClipboard, experimental_usePluginId as usePluginId, useRealtime, useSdk, useSettings } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { EmptyState, Skeleton } from "../../kit";
@@ -137,6 +137,10 @@ function Session({
   const onClosedRef = useRef(onClosed);
   onClosedRef.current = onClosed;
   const closeTreeRef = useRef<() => void>(() => {});
+  const { values: settingValues } = useSettings();
+  const treeStaysOpen = settingValues?.treeStaysOpen === true;
+  /** A path `:bb-files` asked for while the tree was hidden: revealed once it is up. */
+  const pendingReveal = useRef<string | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<RendererDiagnostics | null>(null);
   const [restart, setRestart] = useState(0);
@@ -339,6 +343,27 @@ function Session({
     };
   }, [threadId, active]);
 
+  // :bb-files (space e in the owner's keys): show the tree on that file and focus it.
+  useRealtime("files", (payload: unknown) => {
+    const request = payload as { threadId?: string; path?: string | null } | null;
+    if (!tree || !active || request?.threadId !== threadId) return;
+    const path = request.path ?? null;
+    if (showTree && treeHandle.current) {
+      if (path) treeHandle.current.reveal(path);
+      treeHandle.current.focus();
+      return;
+    }
+    pendingReveal.current = path;
+    setTreeOpen(true);
+  });
+
+  // A file opened from the tree: back to the editor, and the tree closes
+  // (it is a picker) unless the user keeps it open.
+  const treeOpened = () => {
+    if (!treeStaysOpen) setTreeVisible(false);
+    else editorFocus.current?.();
+  };
+
   // Cmd shortcuts (app.tsx): show or hide the tree, move focus between panes.
   const controls = useRef({ toggleTree: () => {}, switchFocus: () => {} });
   controls.current = {
@@ -393,7 +418,13 @@ function Session({
               config={config}
               handle={treeHandle}
               onQuit={() => setTreeVisible(false)}
-              onOpened={() => editorFocus.current?.()}
+              onOpened={treeOpened}
+              onReady={() => {
+                const path = pendingReveal.current;
+                pendingReveal.current = null;
+                if (path) treeHandle.current?.reveal(path);
+                treeHandle.current?.focus();
+              }}
             />
             <div
               role="separator"

@@ -81,6 +81,23 @@ interface Instance {
  */
 export type PerfMode = "normal" | "quiet" | "off";
 
+/**
+ * Event kinds beyond protocol v1's first set, each subscribed on its own
+ * (an unknown kind fails a whole subscribe on builds without it):
+ * - `files` only for a Helix the plugin started in a bb terminal (its
+ *   registry has BB_THREAD_ID and BB_TERMINAL_SESSION_ID): the editor page
+ *   can show a tree for it. Elsewhere nobody subscribes, and `:bb-files`
+ *   runs Helix's own full-screen file manager, as it should in a terminal.
+ * - `review` when Helix offers the `review` capability.
+ */
+function optionalKinds(instance: Instance): string[] {
+  const env = instance.registry.env ?? {};
+  const kinds: string[] = [];
+  if (env.BB_THREAD_ID && env.BB_TERMINAL_SESSION_ID) kinds.push("files");
+  if (instance.summary.capabilities.includes("review")) kinds.push("review");
+  return kinds;
+}
+
 export class InstanceManager {
   readonly bridgeDir: string;
   private readonly instances = new Map<string, Instance>();
@@ -246,7 +263,7 @@ export class InstanceManager {
         this.changed();
         return;
       }
-      if (instance.perf !== "off") await connection.request("events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
+      if (instance.perf !== "off") await this.subscribe(instance, connection);
       instance.attempts = 0;
       instance.summary.status = "connected";
       instance.summary.error = null;
@@ -404,6 +421,16 @@ export class InstanceManager {
         this.changed(true);
         return;
       }
+      // :bb-files and :bb-review: user actions, handled by the server like sends.
+      case "event/files":
+      case "event/review": {
+        this.sendSeq += 1;
+        this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { ...params, kind: method === "event/files" ? "files" : "review" } });
+        if (this.sends.length > MAX_SENDS) this.sends.splice(0, this.sends.length - MAX_SENDS);
+        this.syncSendCounts();
+        this.changed(true);
+        return;
+      }
       case "event/lsp": {
         const name = String(params.name ?? params.id ?? "?");
         const set = new Set(summary.lspServers);
@@ -484,6 +511,11 @@ export class InstanceManager {
     return this.sends.length;
   }
 
+  private async subscribe(instance: Instance, connection: BridgeConnection): Promise<void> {
+    await connection.request("events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
+    for (const kind of optionalKinds(instance)) await connection.request("events/subscribe", { events: [kind] }, EDITOR_TIMEOUT_MS).catch(() => {});
+  }
+
   /** Returns false when no such instance is connected here. */
   async setPerfMode(instanceId: string, mode: PerfMode): Promise<boolean> {
     const instance = this.instances.get(instanceId);
@@ -492,7 +524,8 @@ export class InstanceManager {
     const was = instance.perf;
     instance.perf = mode;
     if ((was === "off") !== (mode === "off")) {
-      await connection.request(mode === "off" ? "events/unsubscribe" : "events/subscribe", { events: [...EVENT_KINDS] }, EDITOR_TIMEOUT_MS);
+      if (mode === "off") await connection.request("events/unsubscribe", { events: [...EVENT_KINDS, ...optionalKinds(instance)] }, EDITOR_TIMEOUT_MS).catch(() => {});
+      else await this.subscribe(instance, connection);
     }
     if (mode === "normal") this.changed(true);
     return true;

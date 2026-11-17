@@ -49,6 +49,10 @@ export interface SendDeps {
   draftReady(threadId: string): void;
   /** A comment was added or sent: refresh the annotations in Helix. */
   commentsChanged(): void;
+  /** `:bb-files` in a Helix the editor page shows: open its tree on `path`. */
+  filesRequested?(threadId: string, path: string | null): void;
+  /** `:bb-review <target>`: start or end a review. Returns the status-line text. */
+  reviewRequested?(instance: BoundInstance, target: string): Promise<string>;
   log(message: string): void;
 }
 
@@ -95,6 +99,8 @@ export class SendHandler {
 
   async handle(record: SendRecord, instance: BoundInstance | null): Promise<string> {
     if (!instance) return "dropped: the instance is gone";
+    const kind = (record.event as { kind?: unknown }).kind;
+    if (kind === "files" || kind === "review") return this.handleRequest(kind, record.event, instance);
     const parsed = sendEventSchema.safeParse(record.event);
     if (!parsed.success) {
       await this.deps.service.status(instance, "bb could not read that send", "error");
@@ -141,6 +147,27 @@ export class SendHandler {
       await this.deps.service.status(instance, `bb: ${message}`, "error");
       return `failed: ${message}`;
     }
+  }
+
+  /** `:bb-files` and `:bb-review`: not messages, requests to bb. */
+  private async handleRequest(kind: "files" | "review", event: Record<string, unknown>, instance: BoundInstance): Promise<string> {
+    const threadId = instance.threadId;
+    if (!threadId) {
+      await this.deps.service.status(instance, "This Helix is not bound to a bb thread: run `bb hx bind` or open it from a thread", "error");
+      return "dropped: not bound";
+    }
+    if (kind === "files") {
+      this.deps.filesRequested?.(threadId, typeof event.path === "string" ? event.path : null);
+      return "files";
+    }
+    const target = typeof event.target === "string" ? event.target.trim() : "";
+    if (!this.deps.reviewRequested) {
+      await this.deps.service.status(instance, "Reviews need a newer Helix Bridge", "error");
+      return "review: unsupported";
+    }
+    const message = await this.deps.reviewRequested(instance, target).catch((error: unknown) => `bb: ${error instanceof Error ? error.message : String(error)}`);
+    await this.deps.service.status(instance, message, message.startsWith("bb: ") ? "error" : "info");
+    return `review ${target || "(none)"}`;
   }
 
   private async sendNow(threadId: string, text: string): Promise<void> {

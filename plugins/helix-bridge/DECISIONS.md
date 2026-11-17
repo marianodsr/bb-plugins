@@ -270,3 +270,24 @@ conservatively. Newest last.
     in device pixels. A family not installed on the computer running bb's
     app (or a face that did not load) shows a one-line notice under the
     editor.
+50. **The tree is a picker**: opening a file from it (Enter, `l`, `o`, Right,
+    or a click; detected as Helix's focused file changing within 2 s) closes
+    it and puts focus in Helix, unless the `treeStaysOpen` setting is on.
+    Escape (a keymap the plugin adds only when the user has no keymap.toml)
+    and `q` quit yazi, which closes the pane.
+51. **`:bb-files`** (`space e`): the host subscribes to `files` only for a
+    Helix the plugin started in a bb terminal (registry env has both
+    BB_THREAD_ID and BB_TERMINAL_SESSION_ID); anywhere else nobody
+    subscribes and Helix runs its own file manager full screen. Optional
+    kinds (`files`, `review`) are subscribed one per request, failures
+    ignored, because an unknown kind fails a whole subscribe on older
+    builds. `event/files` goes through the send queue; the editor page of
+    that thread shows the tree, reveals the file and focuses it.
+52. **Opening from the tree is direct**: the opener script finds the
+    thread's Helix in the bridge directory and sends `editor/open` over its
+    socket (macOS `nc` quits when its input ends, so the input is held open
+    while the script, detached, waits for the answer); `bb hx tree-open` is
+    the fallback. Measured (spike/tree-open-latency.mjs, Enter to Helix's
+    first output naming the file): 39-116 ms for README.md, 93-183 ms for a
+    Go file after its first open (Helix's own work for Go), against about
+    830 ms through the bb CLI.

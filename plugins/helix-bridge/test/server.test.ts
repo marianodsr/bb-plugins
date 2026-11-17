@@ -529,6 +529,27 @@ describe("the file tree", () => {
     expect(readFileSync(log, "utf8").trim()).toBe(`hx tree-open ${join(workspace, "main.go")}`);
   });
 
+  it("takes :bb-files for a Helix the plugin started in a bb terminal, and tells the editor page", async () => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term", BB_TERMINAL_SESSION_ID: "term_helix1" });
+    await until(() => (mock.control({ cmd: "state" }).subscriptions as string[][]).some((s) => s.includes("files")));
+    expect(mock.control({ cmd: "files" })).toMatchObject({ emitted: true });
+    const signal = await until(() => fake.harness.inspection.realtimeSignals.find((s) => s.channel === "files"));
+    expect(signal.payload).toMatchObject({ threadId: "thr_term", path: join(workspace, "main.go") });
+  });
+
+  it("leaves :bb-files to Helix in the user's own terminal, and to an instance bound only by thread", async () => {
+    for (const env of [{ BB_TERMINAL_SESSION_ID: "term_users1" }, { BB_THREAD_ID: "thr_term" }] as Record<string, string>[]) {
+      await teardown();
+      await setup(env);
+      await until(() => (mock.control({ cmd: "state" }).subscriptions as string[][]).some((s) => s.includes("send")));
+      await wait(100);
+      expect((mock.control({ cmd: "state" }).subscriptions as string[][]).some((s) => s.includes("files"))).toBe(false);
+      // Nobody subscribed: Helix runs its own file manager, full screen.
+      expect(mock.control({ cmd: "files" })).toMatchObject({ emitted: false, ranFileManager: true });
+    }
+  });
+
   it("gives each thread its own stable yazi client id", () => {
     expect(treeClientId("thr_a")).toBe(treeClientId("thr_a"));
     expect(treeClientId("thr_a")).not.toBe(treeClientId("thr_b"));

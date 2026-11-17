@@ -30,6 +30,8 @@ const KIND_OF = {
   "event/send": "send",
   "event/lsp": "lsp",
   "event/externalChange": "externalChange",
+  "event/files": "files",
+  "event/review": "review",
 };
 /** Events the queue may drop when it overflows (all but send). */
 const COALESCABLE = new Set(["event/selection", "event/documentChanged", "event/diagnostics", "event/mode", "event/focus"]);
@@ -200,11 +202,13 @@ export async function startMockBridge(options) {
       case "events/subscribe":
       case "events/unsubscribe": {
         if (!Array.isArray(params.events)) throw new BridgeError(ERR.invalidParams, "events must be an array", { field: "events" });
-        const unknown = params.events.find((e) => !EVENT_KINDS.includes(e));
+        // `files` came with :bb-files; `review` with the review capability.
+        const known = [...EVENT_KINDS, "files", ...(has("review") ? ["review"] : [])];
+        const unknown = params.events.find((e) => !known.includes(e));
         if (unknown !== undefined) throw new BridgeError(ERR.invalidParams, `unknown event kind ${unknown}`, { field: "events" });
         const kinds = params.events;
         for (const kind of kinds) method === "events/subscribe" ? client.subs.add(kind) : client.subs.delete(kind);
-        return { subscribed: EVENT_KINDS.filter((k) => client.subs.has(k)) };
+        return { subscribed: known.filter((k) => client.subs.has(k)) };
       }
       case "editor/state":
         need("editor");
@@ -345,8 +349,22 @@ export async function startMockBridge(options) {
         if (command.ms > 0) slow.set(command.method ?? "*", command.ms);
         else slow.delete(command.method ?? "*");
         return { ok: true };
+      case "files": {
+        // :bb-files: with a subscriber, the client shows its tree; without,
+        // Helix runs its own file manager full screen.
+        if (![...clients].some((c) => c.subs.has("files"))) return { ok: true, emitted: false, ranFileManager: true };
+        const doc = editor.focusedDoc();
+        editor.emit("event/files", { path: doc.path, docId: doc.docId, cwd: editor.cwd });
+        return { ok: true, emitted: true };
+      }
+      case "review": {
+        if (![...clients].some((c) => c.subs.has("review"))) return { ok: false, error: "no client is subscribed to review" };
+        const doc = editor.focusedDoc();
+        editor.emit("event/review", { target: command.target ?? "", path: doc.path, docId: doc.docId });
+        return { ok: true };
+      }
       case "state":
-        return { ok: true, state: editor.state(), status: editor.status, pendingJump: Boolean(editor.pendingJump), lists: Object.fromEntries([...editor.lists].map(([k, v]) => [k, v.items.length])), activeList: editor.activeList, annotations: Object.fromEntries([...editor.annotations].map(([k, v]) => [k.split("\0")[1], v])), reveals: editor.reveals, stats, clients: clients.size, views: editor.viewList() };
+        return { ok: true, subscriptions: [...clients].map((c) => [...c.subs].sort()), state: editor.state(), status: editor.status, pendingJump: Boolean(editor.pendingJump), lists: Object.fromEntries([...editor.lists].map(([k, v]) => [k, v.items.length])), activeList: editor.activeList, annotations: Object.fromEntries([...editor.annotations].map(([k, v]) => [k.split("\0")[1], v])), reveals: editor.reveals, stats, clients: clients.size, views: editor.viewList() };
       case "go":
         return { ok: true, ...editor.go() };
       case "crash":
