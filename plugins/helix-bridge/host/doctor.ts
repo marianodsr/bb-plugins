@@ -10,7 +10,7 @@ import type { DoctorCheck, GhosttyConfig, InstanceSummary } from "../shared/host
 import { PROTOCOL_VERSION } from "../shared/protocol";
 
 export const INSTALL_COMMAND =
-  "git clone -b bb-bridge https://github.com/marianodsr/helix.git ~/src/helix-bb && ~/src/helix-bb/bb-bridge/install.sh";
+  "curl -fsSL https://raw.githubusercontent.com/marianodsr/helix/bb-bridge/bb-bridge/install.sh | sh";
 
 export function resolveExecutable(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const executable = (path: string) => {
