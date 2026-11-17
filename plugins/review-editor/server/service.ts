@@ -50,6 +50,8 @@ export interface ServiceDeps {
   sdk: () => Sdk;
   store: Store;
   invalidate: (tags: readonly string[]) => void;
+  /** After any comment write: the files whose comments changed. Must not throw. */
+  commentsChanged?: (files: readonly { environmentId: string; path: string }[]) => void;
   log: (message: string) => void;
   now?: () => number;
 }
@@ -365,15 +367,18 @@ export class ReviewService {
 
   // ----- comments -----------------------------------------------------------
 
-  private invalidateComments(comments: readonly Pick<Comment, "id" | "environmentId" | "sentThreadId">[], extraThreadIds: readonly string[] = []): void {
+  private invalidateComments(comments: readonly Pick<Comment, "id" | "environmentId" | "path" | "sentThreadId">[], extraThreadIds: readonly string[] = []): void {
     const list = new Set<string>([tags.comments]);
+    const files = new Map<string, { environmentId: string; path: string }>();
     for (const comment of comments) {
+      files.set(`${comment.environmentId}\0${comment.path}`, { environmentId: comment.environmentId, path: comment.path });
       list.add(tags.envComments(comment.environmentId));
       list.add(tags.comment(comment.id));
       if (comment.sentThreadId !== null) list.add(tags.threadComments(comment.sentThreadId));
     }
     for (const threadId of extraThreadIds) list.add(tags.threadComments(threadId));
     this.deps.invalidate([...list]);
+    if (files.size > 0) this.deps.commentsChanged?.([...files.values()]);
   }
 
   listComments(filter: CommentFilter): Comment[] {

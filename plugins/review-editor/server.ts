@@ -6,6 +6,7 @@
 // server/service.ts holds every operation the RPC, `bb review` and the agent
 // tools share.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import { registerCli } from "./server/cli";
 import { rpcContract, tags } from "./server/contract";
 import { ReviewService } from "./server/service";
@@ -17,6 +18,30 @@ export type * from "./server/contract";
 
 export const SKILL_NAME = "review-editor";
 
+// Helix Bridge shows comments in the editor; tell it which files changed so
+// it need not poll. Fire and forget: a comment write never waits for or fails
+// on it. Whether it is installed is re-checked at most every 30 s.
+const HELIX_BRIDGE = "helix-bridge";
+
+function helixBridgeNotifier(bb: BbPluginApi) {
+  let known: { at: number; present: boolean } | null = null;
+  const present = async () => {
+    if (known && Date.now() - known.at < 30_000) return known.present;
+    const listed = (await bb.sdk.plugins.list()) as unknown as { id: string; status?: string }[] | { plugins: { id: string; status?: string }[] };
+    const plugins = Array.isArray(listed) ? listed : listed.plugins;
+    known = { at: Date.now(), present: plugins.some((p) => p.id === HELIX_BRIDGE && (p.status === undefined || p.status === "running")) };
+    return known.present;
+  };
+  return (files: readonly { environmentId: string; path: string }[]): void => {
+    void (async () => {
+      if (!(await present())) return;
+      for (const { environmentId, path } of files) {
+        await bb.sdk.plugins.callRpc({ pluginId: HELIX_BRIDGE, method: "commentsChanged", input: { environmentId, path }, outputSchema: z.unknown() }).catch(() => {});
+      }
+    })().catch(() => {});
+  };
+}
+
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
@@ -25,6 +50,7 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     store,
     invalidate: (list) => bb.rpc.experimental_invalidate(list),
+    commentsChanged: helixBridgeNotifier(bb),
     log: (message) => bb.log.warn(message),
   });
 

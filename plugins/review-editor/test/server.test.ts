@@ -28,7 +28,8 @@ const SESSION = [
   "",
 ].join("\n");
 
-function setup() {
+/** `helixTold`: Helix Bridge is installed; its calls land here, and every one fails. */
+function setup(helixTold?: unknown[]) {
   const disk = new Map<string, string>([[`${ROOT}/src/session.ts`, SESSION]]);
   const head = new Map<string, string>([[`${ROOT}/src/session.ts`, SESSION]]);
   const missing = () => Object.assign(new Error("ENOENT: no such file"), { status: 404 });
@@ -71,7 +72,12 @@ function setup() {
         updatePluginMetadata: async ({ set }: { set: Record<string, unknown> }) => set,
       },
       plugins: {
+        list: async () => (helixTold ? [{ id: "helix-bridge", status: "running" }] : []),
         callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: unknown }) => {
+          if (helixTold && pluginId === "helix-bridge") {
+            helixTold.push({ method, input });
+            throw new Error("helix-bridge is down");
+          }
           expect(pluginId).toBe("bb--git");
           expect(method).toBe("files");
           expect(input).toMatchObject({ environmentId: ENV, target: { type: "uncommitted" } });
@@ -230,6 +236,19 @@ describe("comments", () => {
     const read = await rpc<{ sha256: string }>("readFile", file);
     await rpc("saveFile", { ...file, content: `${SESSION}\n`, expectedSha256: read.sha256 });
     expect(invalidations()).toContain(`file:${ENV}:src/session.ts`);
+  });
+
+  it("tells Helix Bridge which file's comments changed, never failing the write", async () => {
+    await ctx.harness.lifecycle.dispose();
+    const told: unknown[] = [];
+    ctx = setup(told);
+    await plugin(ctx.bb);
+    const comment = await addComment(5, 5);
+    await rpc("replyToComment", { commentId: comment.id, body: "Because the caller checks" });
+    expect(await rpc("deleteComment", { id: comment.id })).toEqual({ deleted: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const call = { method: "commentsChanged", input: { environmentId: ENV, path: "src/session.ts" } };
+    expect(told).toEqual([call, call, call]);
   });
 
   it("edits, reopens and deletes", async () => {
