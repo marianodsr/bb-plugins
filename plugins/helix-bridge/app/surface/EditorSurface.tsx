@@ -544,8 +544,25 @@ function Session({
   );
 }
 
+/** The GPU behind WebGL, once: a software one (SwiftShader, llvmpipe) makes redraw numbers meaningless. */
+let gpuName: string | null | undefined;
+function gpu(): string | null {
+  if (gpuName !== undefined) return gpuName;
+  try {
+    const gl = document.createElement("canvas").getContext("webgl2") ?? document.createElement("canvas").getContext("webgl");
+    const info = gl?.getExtension("WEBGL_debug_renderer_info");
+    gpuName = gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : null;
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  } catch {
+    gpuName = null;
+  }
+  return gpuName;
+}
+
 function Hud({ snapshot, diagnostics, grid }: { snapshot: HudSnapshot; diagnostics: RendererDiagnostics | null; grid: { cols: number; rows: number } | null }) {
-  const renderer = diagnostics?.renderer ?? "?";
+  const name = gpu();
+  const software = name !== null && /swiftshader|llvmpipe|software|basic render/iu.test(name);
+  const renderer = `${diagnostics?.renderer ?? "?"}${diagnostics?.renderer === "webgl" && name ? (software ? " (software GPU: redraw numbers are not real)" : ` (${name.replace(/^ANGLE \((.*)\)$/u, "$1").slice(0, 40)})`) : ""}`;
   const ms = (v: number | null) => (v === null ? "-" : `${v} ms`);
   return (
     <div
