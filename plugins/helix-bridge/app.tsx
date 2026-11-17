@@ -98,7 +98,7 @@ export default definePluginApp((app) => {
   app.commands.register({
     id: "focus-editor",
     title: "Helix: focus the editor",
-    defaultShortcut: { key: "e", mod: true, shift: true },
+    defaultShortcut: { key: "h", mod: true, shift: true },
     isAvailable: () => visibleSurfaces.size > 0,
     run: () => void focusEditor(),
   });

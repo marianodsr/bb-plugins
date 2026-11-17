@@ -1,6 +1,6 @@
 // The server end to end in-process: bb's fake plugin host, its host-RPC
 // driver wired to a real InstanceManager, and the mock bridge behind it.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,8 @@ import { parseLocation } from "../server/cli";
 import { hunksFromDiff } from "../server/follow";
 import { selectionBlock } from "../server/sends";
 import { TOOL_NAMES } from "../server/tools";
+import { commentItems, type ReviewComment } from "../server/annotations";
+import { editedPaths } from "../server/watch";
 // @ts-expect-error plain ESM test helper without types
 import { startMockBridge } from "./mock-bridge/mock.mjs";
 
@@ -41,9 +43,28 @@ let reconcile: { controller: AbortController; done: Promise<void> };
 
 const textOf = (result: unknown) => ((result as { content: { text: string }[] }).content ?? []).map((c) => c.text).join("\n");
 
-async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" }) {
+async function teardown() {
+  reconcile.controller.abort();
+  await reconcile.done.catch(() => {});
+  await fake.harness.lifecycle.dispose();
+  manager.dispose();
+  await mock.stop();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+let capabilities: string[] | null = null;
+async function setupWithCapabilities(caps: string[]) {
+  capabilities = caps;
+  try {
+    await setup();
+  } finally {
+    capabilities = null;
+  }
+}
+
+async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" }, extraSdk: Record<string, Record<string, unknown>> = {}) {
   dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
-  mock = await startMockBridge({ dir, workspace, open: ["main.go"], pid: process.pid, env });
+  mock = await startMockBridge({ dir, workspace, open: ["main.go"], pid: process.pid, env, ...(capabilities ? { capabilities } : {}) });
   sent = [];
   fake = createFakePluginHost({
     pluginId: "helix-bridge",
@@ -64,7 +85,7 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" })
           return {} as never;
         },
       },
-      plugins: { list: async () => [] as never },
+      plugins: { list: async () => [] as never, ...extraSdk.plugins },
       system: { config: async () => ({ primaryHostId: HOST }) as never },
     } as never,
     experimental_callHostRpc: async ({ method, input }) => {
@@ -100,12 +121,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  reconcile.controller.abort();
-  await reconcile.done.catch(() => {});
-  await fake.harness.lifecycle.dispose();
-  manager.dispose();
-  await mock.stop();
-  rmSync(dir, { recursive: true, force: true });
+  await teardown();
 });
 
 const names = (tools: readonly unknown[]) => tools.map((t) => (typeof t === "string" ? t : (t as { name: string }).name));
@@ -134,6 +150,20 @@ describe("instances and bindings", () => {
       makePluginAgentConfigurationContext({ thread: { id: "thr_y" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
     );
     expect(names(other.tools)).toEqual([]);
+  });
+});
+
+describe("capabilities", () => {
+  it("offers only the tools the connected Helix supports, and more as it gains them", async () => {
+    await teardown();
+    dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+    await setupWithCapabilities(["editor"]);
+    const context = makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never });
+    expect(names((await fake.harness.behavior.resolveAgentConfiguration(context)).tools)).toEqual(["helix_selection", "helix_show"]);
+    await teardown();
+    dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+    await setupWithCapabilities(["editor", "reload", "locations", "diagnostics", "lsp"]);
+    expect(names((await fake.harness.behavior.resolveAgentConfiguration(context)).tools)).toEqual(["helix_selection", "helix_show", "helix_tour", "helix_diagnostics", "helix_query"]);
   });
 });
 
@@ -277,6 +307,141 @@ describe("editor terminal", () => {
     expect(created[0]).toMatchObject({ scope: { kind: "thread", threadId: "thr_term" }, title: "Helix", start: { mode: "command" } });
     // bb's terminals do not set BB_THREAD_ID; the session carries it so Helix records it.
     expect((created[0] as { start: { command: string } }).start.command).toMatch(/^BB_THREAD_ID=thr_term BB_ENVIRONMENT_ID=env_test BB_PROJECT_ID=\S+ exec hxb$/u);
+  });
+});
+
+describe("watching the agent write", () => {
+  const fileChange = (path: string, status = "completed") => ({ type: "fileChange", status, changes: [{ path, kind: "update", diff: "" }] });
+
+  it("reloads exactly the edited file with reveal and follow, as each edit lands", async () => {
+    const scratch = join(workspace, "scratch-watch.go");
+    writeFileSync(scratch, "package main\n");
+    try {
+      mock.control({ cmd: "select", path: "scratch-watch.go", line: 1 });
+      let served = false;
+      fake.harness.sdk.stub("threads.events.list", async () => [{ seq: 10 }] as never);
+      fake.harness.sdk.stub("threads.events.wait", async ({ afterSeq }: { afterSeq?: string }) => {
+        if (afterSeq === "10" && !served) {
+          served = true;
+          writeFileSync(scratch, "package main\n\nfunc added() {}\n");
+          return { seq: 11, createdAt: Date.now(), data: { item: fileChange(scratch) } } as never;
+        }
+        await wait(50);
+        return null as never;
+      });
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }) });
+      const reveals = await until(() => {
+        const r = mock.control({ cmd: "state" }).reveals as { paths: string[]; follow: boolean }[];
+        return r.length > 0 && r;
+      });
+      expect(reveals[0]).toMatchObject({ paths: [scratch], follow: true });
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }), lastAssistantText: null });
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+  it("reloads without the reveal when Helix does not offer it", async () => {
+    await teardown();
+    dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+    await setupWithCapabilities(["editor", "reload"]);
+    const scratch = join(workspace, "scratch-watch2.go");
+    writeFileSync(scratch, "package main\n");
+    try {
+      mock.control({ cmd: "select", path: "scratch-watch2.go", line: 1 });
+      let served = false;
+      fake.harness.sdk.stub("threads.events.list", async () => [] as never);
+      fake.harness.sdk.stub("threads.events.wait", async () => {
+        if (!served) {
+          served = true;
+          writeFileSync(scratch, "package main\n// edited\n");
+          return { seq: 1, createdAt: Date.now(), data: { item: fileChange(scratch) } } as never;
+        }
+        await wait(50);
+        return null as never;
+      });
+      await fake.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }) });
+      await until(() => (mock.control({ cmd: "state" }).state as { documents: { path: string; version: number }[] }).documents.find((d) => d.path === scratch && d.version === 2));
+      expect(mock.control({ cmd: "state" }).reveals).toEqual([]);
+      await fake.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_term", environmentId: "env_test" }), lastAssistantText: null });
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+  it("names the files a completed edit wrote, and nothing else", () => {
+    expect(editedPaths(fileChange("/w/a.go"), "/w")).toEqual(["/w/a.go"]);
+    expect(editedPaths(fileChange("b.go"), "/w")).toEqual(["/w/b.go"]);
+    expect(editedPaths(fileChange("/w/a.go", "pending"), "/w")).toBeNull();
+    expect(editedPaths({ type: "commandExecution", status: "completed" }, "/w")).toBeNull();
+    expect(editedPaths({ type: "fileChange", status: "completed", changes: [{ path: "/w/gone.go", kind: "delete" }] }, "/w")).toBeNull();
+  });
+});
+
+describe("review comments in the code", () => {
+  const comment = (over: Partial<ReviewComment>): ReviewComment =>
+    ({ id: "rc_1", path: "main.go", startLine: 10, endLine: 12, body: "why?", severity: "issue", state: "open", resolvedBy: null, acknowledgedAt: null, replies: [], ...over }) as ReviewComment;
+
+  it("shows a comment with its sign and replies, and settles with Review Editor's states", () => {
+    expect(commentItems(comment({}))).toEqual([{ line: 10, endLine: 12, text: "why?", kind: "comment", severity: "warning", sign: "●" }]);
+    const replied = commentItems(comment({ state: "sent", replies: [{ author: "agent", body: "fixed it" }] as never }));
+    expect(replied[1]).toEqual({ line: 12, text: "Agent: fixed it", kind: "reply" });
+    expect(commentItems(comment({ state: "resolved", resolvedBy: "user" }))).toEqual([]);
+    expect(commentItems(comment({ state: "resolved", resolvedBy: "agent", acknowledgedAt: null })).at(-1)).toMatchObject({ kind: "note" });
+    expect(commentItems(comment({ state: "resolved", resolvedBy: "agent", acknowledgedAt: 1 }))).toEqual([]);
+  });
+
+  it("sets annotations at once for a Review Editor comment, updates them with replies, and clears them", async () => {
+    let comments: ReviewComment[] = [comment({})];
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" }, {
+      plugins: {
+        list: async () => [{ id: "review-editor", status: "running" }],
+        callRpc: async ({ method }: { method: string }) => {
+          if (method === "listComments") return { comments };
+          throw new Error(`unexpected ${method}`);
+        },
+      },
+    });
+    // The background service polls Review Editor every 3 s.
+    fake.harness.sdk.stub("subscribe", () => () => {});
+    const service = fake.harness.behavior.runService("environment-changes");
+    const file = join(workspace, "main.go");
+    const annotations = () => (mock.control({ cmd: "state" }).annotations as Record<string, { text: string; kind: string }[]>)[file];
+    await until(() => annotations()?.length === 1, 8000);
+    expect(annotations()[0]).toMatchObject({ text: "why?", kind: "comment", sign: "●", line: 10, endLine: 12 });
+    comments = [comment({ state: "sent", replies: [{ author: "agent", body: "on it" }] as never })];
+    await until(() => annotations()?.length === 2, 8000);
+    expect(annotations()[1]).toMatchObject({ text: "Agent: on it", kind: "reply" });
+    comments = [comment({ state: "resolved", resolvedBy: "user" })];
+    await until(() => annotations() === undefined, 8000);
+    // A new connection gets them again.
+    comments = [comment({})];
+    await until(() => annotations()?.length === 1, 8000);
+    service.controller.abort();
+    await service.done.catch(() => {});
+  });
+});
+
+describe("comments Review Editor refuses", () => {
+  it("keeps the comment here and says why", async () => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" }, {
+      plugins: {
+        list: async () => [{ id: "review-editor", status: "running" }],
+        callRpc: async ({ method }: { method: string }) => {
+          if (method === "createComment") throw new Error("HTTP 422: Lines 30-30 are outside the file (it has 21 lines)");
+          if (method === "listComments") return { comments: [] };
+          throw new Error(`unexpected ${method}`);
+        },
+      },
+    });
+    mock.control({ cmd: "select", line: 3, col: 1, endLine: 4, endCol: 1 });
+    mock.control({ cmd: "send", kind: "comment", note: "on new lines" });
+    await until(() => String(mock.control({ cmd: "state" }).status?.message ?? "").startsWith("Comment kept in Helix Bridge (Review Editor: Lines 30-30 are outside the file"));
+    mock.control({ cmd: "send", kind: "flush" });
+    await until(() => sent.length === 1);
+    expect(sent[0]!.text).toMatch(/^Review comments from Helix \(1\)[\s\S]*on new lines/u);
   });
 });
 

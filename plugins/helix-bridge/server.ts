@@ -15,7 +15,9 @@ import { hostContract, hostSignals } from "./shared/host-contract";
 import { Bridge, BridgeFailure, type BoundInstance } from "./server/bridge";
 import { registerCli } from "./server/cli";
 import { rpcContract, tags, type AppInstance, type Position } from "./server/contract";
+import { Annotator } from "./server/annotations";
 import { Follower } from "./server/follow";
+import { AgentWatcher } from "./server/watch";
 import { displayPath, lastLine, rootsOf } from "./server/format";
 import { SendHandler } from "./server/sends";
 import { HelixService } from "./server/service";
@@ -73,6 +75,9 @@ export default async function plugin(bb: BbPluginApi) {
         bb.rpc.experimental_invalidate([tags.instances]);
         bb.realtime.publish("instances", {});
       }
+      annotator.onInstances();
+      // A Helix that connects mid-turn: follow that turn's edits from now on.
+      for (const [environmentId, threads] of activeByEnvironment) for (const threadId of threads) watcher.start(threadId, environmentId);
       schedulePositions();
     },
   });
@@ -89,6 +94,7 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     service,
     store,
+    commentsChanged: () => void annotator.refresh(),
     draftReady: (threadId) => {
       bb.rpc.experimental_invalidate([tags.drafts(threadId)]);
       bb.realtime.publish("draft", { threadId });
@@ -96,10 +102,38 @@ export default async function plugin(bb: BbPluginApi) {
     log: (message) => bb.log.warn(message),
   });
 
+  const annotator = new Annotator({
+    sdk: () => bb.sdk,
+    service,
+    store,
+    reviewEditorRunning: () => sends.reviewEditorRunning(),
+    log: (message) => bb.log.warn(message),
+  });
+
+  const watcher = new AgentWatcher({
+    sdk: () => bb.sdk,
+    service,
+    settings: () => settings.get(),
+    log: (message) => bb.log.warn(message),
+    timing: (edit, ms, instance) => bb.log.info(`agent edit in ${edit.paths.length} file(s) reached ${instance.key} ${ms} ms after bb recorded it`),
+  });
+
+  // Which environments have a turn running, so file changes there count as agent edits.
+  const activeByEnvironment = new Map<string, Set<string>>();
+  const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
+    if (active) watcher.start(threadId, environmentId);
+    else watcher.stop(threadId);
+    if (!environmentId) return;
+    const set = activeByEnvironment.get(environmentId) ?? new Set<string>();
+    if (active) set.add(threadId);
+    else set.delete(threadId);
+    activeByEnvironment.set(environmentId, set);
+  };
   const follower = new Follower({
     sdk: () => bb.sdk,
     service,
     settings: () => settings.get(),
+    watching: (environmentId) => watcher.watching(environmentId),
     log: (message) => bb.log.warn(message),
     skipped: (instance, paths) => {
       skippedByInstance.set(instance.key, paths);
@@ -301,15 +335,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   // ----- background ------------------------------------------------------------
 
-  // Which environments have a turn running, so file changes there count as agent edits.
-  const activeByEnvironment = new Map<string, Set<string>>();
-  const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
-    if (!environmentId) return;
-    const set = activeByEnvironment.get(environmentId) ?? new Set<string>();
-    if (active) set.add(threadId);
-    else set.delete(threadId);
-    activeByEnvironment.set(environmentId, set);
-  };
   bb.background.service("reconcile", {
     async start(signal) {
       while (!signal.aborted) {
@@ -329,16 +354,14 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("environment-changes", {
     async start(signal) {
-      // Turns already running when this plugin (re)loaded.
-      try {
+      // Turns already running when this plugin (re)loaded; never holds up the
+      // subscription below.
+      void (async () => {
         const running = await bb.sdk.threads.listRunning();
-        if (running.length > 0) {
-          const threads = await bb.sdk.threads.list({ threadIds: running.map((t) => t.id).slice(0, 200) });
-          for (const thread of threads) setActive(thread.id, thread.environmentId ?? null, true);
-        }
-      } catch (error) {
-        bb.log.warn(`could not read running threads: ${String(error)}`);
-      }
+        if (running.length === 0) return;
+        const threads = await bb.sdk.threads.list({ threadIds: running.map((t) => t.id).slice(0, 200) });
+        for (const thread of threads) setActive(thread.id, thread.environmentId ?? null, true);
+      })().catch((error: unknown) => bb.log.warn(`could not read running threads: ${String(error)}`));
       const unsubscribe = bb.sdk.subscribe({
         event: "environment:changed",
         callback: (event) => {
@@ -352,9 +375,12 @@ export default async function plugin(bb: BbPluginApi) {
           if (changes.has("environment-deleted") || changes.has("metadata-changed")) bridge.forgetEnvironments();
         },
       });
+      annotator.start();
       await new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true })));
       unsubscribe();
       follower.dispose();
+      annotator.dispose();
+      watcher.dispose();
     },
   });
 
@@ -374,6 +400,8 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(() => {
     if (positionTimer) clearTimeout(positionTimer);
     follower.dispose();
+    annotator.dispose();
+    watcher.dispose();
   });
 }
 

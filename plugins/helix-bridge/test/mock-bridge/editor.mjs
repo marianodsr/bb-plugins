@@ -53,6 +53,7 @@ export class Editor {
     this.busyUntil = 0;
     this.diagnostics = new Map(); // path -> [{ range, severity, message, source }]
     this.annotations = new Map(); // namespace\0path -> items
+    this.reveals = []; // { paths, follow, at } from editor/reload and editor/reveal
     this.status = null;
     this.lspRunning = true;
     this.listeners = new Set();
@@ -287,7 +288,8 @@ export class Editor {
     return { path: doc.path, docId: doc.docId, languageId: doc.languageId, version: doc.version, modified: doc.modified, primary: view.primary, ranges: view.selections.map((r) => ({ ...r, text: this.rangeText(doc, r, cursorsOnly) })), truncated: false };
   }
 
-  reload({ paths, force = false } = {}) {
+  reload({ paths, force = false, reveal = false, follow = false, interrupt } = {}) {
+    if (interrupt !== undefined && interrupt !== "whenIdle" && interrupt !== "always") throw new BridgeError(ERR.invalidParams, "interrupt must be \"whenIdle\" or \"always\"", { field: "interrupt" });
     const wanted = paths ? new Set(paths.map((p) => this.abs(p))) : null;
     const out = { reloaded: [], unchanged: [], skippedModified: [], missing: [] };
     for (const doc of this.docs.values()) {
@@ -309,6 +311,13 @@ export class Editor {
       }
     }
     if (wanted) for (const p of wanted) if (!this.docByPath(p) && !existsSync(p)) out.missing.push(p);
+    // With reveal, the changed text would animate; with follow, the view moves
+    // to the first reloaded buffer (deferred while the user types).
+    if (reveal && out.reloaded.length > 0) this.reveals.push({ paths: [...out.reloaded], follow, at: Date.now() });
+    if (follow && out.reloaded.length > 0) {
+      const first = out.reloaded[0];
+      out.deferred = this.open({ path: first, line: 1, interrupt }).deferred;
+    }
     return out;
   }
 
@@ -461,11 +470,36 @@ export class Editor {
   }
 
   annotate({ namespace, path, items }) {
+    if (typeof namespace !== "string" || !namespace) throw new BridgeError(ERR.invalidParams, "namespace is required", { field: "namespace" });
     if (!Array.isArray(items)) throw new BridgeError(ERR.invalidParams, "items is required", { field: "items" });
+    if (items.length > 500) throw new BridgeError(ERR.tooLarge, "at most 500 items per file");
+    for (const item of items) {
+      if (!Number.isInteger(item.line) || item.line < 1) throw new BridgeError(ERR.invalidParams, "line must be a positive integer", { field: "items" });
+      if (typeof item.text !== "string" || item.text.length > 2000) throw new BridgeError(ERR.invalidParams, "text must be at most 2000 characters", { field: "items" });
+      if (item.kind !== undefined && !["comment", "reply", "note"].includes(item.kind)) throw new BridgeError(ERR.invalidParams, "kind must be comment, reply or note", { field: "items" });
+      if (item.sign !== undefined && [...item.sign].length !== 1) throw new BridgeError(ERR.invalidParams, "sign must be one grapheme", { field: "items" });
+    }
     const key = `${namespace}\0${this.abs(path)}`;
     if (items.length === 0) this.annotations.delete(key);
     else this.annotations.set(key, items);
     return { count: items.length };
+  }
+
+  clearAnnotations({ namespace, path }) {
+    if (typeof namespace !== "string" || !namespace) throw new BridgeError(ERR.invalidParams, "namespace is required", { field: "namespace" });
+    const prefix = path ? `${namespace}\0${this.abs(path)}` : `${namespace}\0`;
+    for (const key of [...this.annotations.keys()]) if (path ? key === prefix : key.startsWith(prefix)) this.annotations.delete(key);
+    return {};
+  }
+
+  /** editor/reveal: purely visual; records what would animate. */
+  reveal({ path, ranges, removed = [], durationMs = 600, follow = false, interrupt }) {
+    if (!Array.isArray(ranges)) throw new BridgeError(ERR.invalidParams, "ranges is required", { field: "ranges" });
+    if (durationMs < 50 || durationMs > 3000) throw new BridgeError(ERR.invalidParams, "durationMs must be 50 to 3000", { field: "durationMs" });
+    const abs = this.abs(path);
+    this.reveals.push({ paths: [abs], ranges, removed, follow, at: Date.now() });
+    if (follow && ranges[0]) this.open({ path: abs, line: ranges[0].start.line, interrupt });
+    return { animated: ranges.length };
   }
 
   getDiagnostics({ path, minSeverity = "hint", limit = 100, offset = 0 } = {}) {

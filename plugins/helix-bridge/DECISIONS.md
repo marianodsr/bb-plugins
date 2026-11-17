@@ -9,9 +9,10 @@ conservatively. Newest last.
    `<hostId>:<pid>`. A registry file whose `startedAt` or socket changed is a
    new instance. Explicit bindings are stored by host, pid and `startedAt`,
    so they end with the instance and are pruned on reconcile.
-2. **Binding order follows the design** (terminal, explicit, environment).
-   `bb hx bind` on an instance started in another thread's terminal is
-   refused with the reason, rather than overriding the terminal.
+2. **Binding order**: an explicit binding wins, then the thread of the bb
+   terminal Helix runs in, then the latest thread in the environment that
+   contains its workspace. (Changed in step 3: the terminal's thread is the
+   default, not a lock.)
 3. **Test instances**: the mock bridge writes `"test": true` in its registry
    file (not part of PROTOCOL.md). Such instances bind only through
    `BB_THREAD_ID` or `bb hx bind`, never through their workspace, and never
@@ -102,3 +103,58 @@ conservatively. Newest last.
 22. **Status**: a context card row (card layout) and a context segment
     (banner layout); the segment omits the file and line because the
     composer chip right below shows them.
+
+## Step 3: the real fork
+
+23. **bb's terminals do not export `BB_THREAD_ID`** (or the environment,
+    project and terminal ids); they export `BB_TERMINAL_SESSION_ID`. The
+    fork records that too (de26f772), and the plugin maps a session to its
+    thread with `terminals.get`. Sessions the plugin starts also set
+    `BB_THREAD_ID`, `BB_ENVIRONMENT_ID` and `BB_PROJECT_ID` explicitly.
+24. **When Helix exits** the terminal stream says so at once (`exited`, with
+    the session's exit code and close reason). Exit code 0 or a close from
+    bb's side closes the surface and the session and puts focus in the
+    thread's composer (the page goes back to the thread; the tab closes);
+    anything else shows "Helix exited with code N" with the last lines left
+    on the terminal's screen, Reopen and Close. bb reports exit code 0 for a
+    process killed by a signal, so `panicked at` on screen also counts as a
+    crash.
+25. **Resize after bb's own tab**: our surface re-sends its size every time
+    it gains focus, so a resize from bb's stock terminal tab for the same
+    session never sticks.
+26. **Kitty keyboard protocol**: bb's terminal daemon answers the device
+    attributes query itself, at once, so Helix's automatic detection always
+    stops before the surface can report Kitty support. With
+    `kitty-keyboard-protocol = "enabled"` in Helix's config it works fully
+    (Escape `CSI 27u`, Ctrl+i `CSI 105;5u`, Option chords as Kitty). The
+    plugin never edits the config; `bb hx doctor` says how.
+27. **Tools follow capabilities**: `agents.configure` offers only the tools
+    whose capability a connected Helix serving the thread reports.
+28. **Pane numbers**: Helix's view ids (often above 2^32) stay internal;
+    people and agents see 1, 2, 3, ... per instance, in the order first seen.
+29. **Stale buffers**: without `reload`, `helix_show` and `bb hx open` say
+    the buffer may be stale when files changed on disk during an agent's
+    turn since that Helix started.
+30. **Watching the agent write**: bb's `environment:changed` fires only while
+    some client shows that environment's git status, so it cannot drive
+    this. While a turn runs in an environment a Helix with `reload` serves,
+    the plugin long-polls the thread's `item/completed` events
+    (`threads.events.wait`) and reloads exactly the files of each completed
+    `fileChange`, with `reveal` and (setting "Follow the agent") `follow`.
+    Measured: 7 ms from bb recording the edit to the reload reaching Helix.
+    The environment-change reload waits 2.5 s while a watcher runs, so it
+    never reloads an agent's edit first, unanimated. Granularity is one
+    edit: Claude Code and ACP emit no `item/fileChange/outputDelta`, and
+    Codex's is the patch tool's result text, not the patch being written.
+31. **Comments in the code**: namespace `bb-review`. Review Editor's comments
+    for each environment an annotation-capable Helix serves are re-read when
+    this plugin changes one and every 3 s; a file is re-sent only when its
+    items change, and everything again when an instance connects or opens
+    files. Open, sent and outdated comments show with a sign, their text and
+    replies; an agent's resolution shows until the reviewer acknowledges it;
+    a user's resolution clears it.
+32. **A comment Review Editor refuses** (its lines exist only in the unsaved
+    buffer) is kept as this plugin's pending comment, with the reason on
+    Helix's status line; `:bb-comments-send` sends both kinds.
+33. **Shortcut**: "Helix: focus the editor" is Cmd+Shift+H (Cmd+Shift+E is
+    bb's `pane.maximize.toggle`).

@@ -50,8 +50,19 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
   does.
 
 Some providers list these as deferred tools (for example
-`mcp__bb-bridge__helix_show`): load their schemas first. Tools are attached
-when a session starts; if they are missing, use the CLI.
+`mcp__bb-bridge__helix_show`): load their schemas first.
+
+Which tools you get depends on what the connected Helix can do (each
+version of the fork adds capabilities): `helix_selection` and `helix_show`
+need only the basics; `helix_tour`, `helix_panes`, `helix_diagnostics`,
+`helix_query`, `helix_edit` and `helix_command` appear when Helix offers
+them. Tools are attached when your session starts with a connected Helix
+serving the thread; a thread that started earlier gets them in its next
+session. Until then, use the CLI. A tool that answers "this Helix does not
+offer ... yet" is telling you a fact: say so instead of retrying.
+
+When `helix_show` says the buffer may be stale, Helix cannot reload files
+yet: tell the user to run `:reload` if the file looks out of date.
 
 ## From the user's side
 
@@ -60,8 +71,11 @@ thread's composer; `:bb-send!` sends it), `:bb-ask <question>` (sent at
 once), `:bb-comment <text>` (a review comment on the selected lines, kept
 until `:bb-comments-send` sends them all). With Review Editor installed,
 those comments are Review Editor comments: reply and resolve them with
-`review_reply` and `review_resolve`. When a turn ends, Helix gets the list of
-places you changed; the user walks it with `:bb-next`.
+`review_reply` and `review_resolve`; your replies show under the commented
+lines in Helix, and a resolved comment leaves the code once the reviewer has
+seen it. Each file you edit is reloaded in Helix as your edit lands (shown
+as if typed, when Helix offers it); when a turn ends, Helix gets the list of
+places you changed and the user walks it with `:bb-next`.
 
 ## CLI
 

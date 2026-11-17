@@ -47,6 +47,8 @@ export interface SendDeps {
   store: Store;
   /** A draft is waiting for this thread's composer. */
   draftReady(threadId: string): void;
+  /** A comment was added or sent: refresh the annotations in Helix. */
+  commentsChanged(): void;
   log(message: string): void;
 }
 
@@ -157,17 +159,24 @@ export class SendHandler {
       return "dropped: no selection";
     }
     const lines = rangeLines(range);
+    let refused: string | null = null;
     if (environmentId && environmentPath && within(environmentPath, event.path) && (await this.reviewEditorRunning())) {
-      await this.deps.sdk().plugins.callRpc({
-        pluginId: REVIEW_EDITOR,
-        method: "createComment",
-        input: { environmentId, path: relative(environmentPath, event.path), startLine: lines.start, endLine: lines.end, body, threadId },
-        outputSchema: reviewCommentSchema,
-      });
-      const pending = await this.reviewPending(environmentId, threadId);
-      await this.deps.service.status(instance, `Comment added: ${pending.length} pending for ${await this.titleOf(threadId)} (:bb-comments-send)`);
-      await this.annotate(instance, environmentId, threadId);
-      return "comment (review-editor)";
+      try {
+        await this.deps.sdk().plugins.callRpc({
+          pluginId: REVIEW_EDITOR,
+          method: "createComment",
+          input: { environmentId, path: relative(environmentPath, event.path), startLine: lines.start, endLine: lines.end, body, threadId },
+          outputSchema: reviewCommentSchema,
+        });
+        const pending = await this.reviewPending(environmentId, threadId);
+        await this.deps.service.status(instance, `Comment added: ${pending.length} pending for ${await this.titleOf(threadId)} (:bb-comments-send)`);
+        this.deps.commentsChanged();
+        return "comment (review-editor)";
+      } catch (error) {
+        // Review Editor quotes the file on disk; lines that exist only in the
+        // unsaved buffer are refused. Keep the comment here instead.
+        refused = (error instanceof Error ? error.message : String(error)).replace(/^HTTP \d+: /u, "");
+      }
     }
     const comment: LocalComment = {
       id: `hxc_${randomUUID().slice(0, 10)}`,
@@ -184,9 +193,9 @@ export class SendHandler {
     };
     this.deps.store.addComment(comment);
     const pending = this.deps.store.pendingComments(threadId);
-    await this.deps.service.status(instance, `Comment added: ${pending.length} pending (:bb-comments-send)`);
-    await this.annotateLocal(instance, pending);
-    return "comment (local)";
+    await this.deps.service.status(instance, refused ? `Comment kept in Helix Bridge (Review Editor: ${refused}): ${pending.length} pending (:bb-comments-send)` : `Comment added: ${pending.length} pending (:bb-comments-send)`);
+    this.deps.commentsChanged();
+    return refused ? `comment (local; review-editor refused: ${refused})` : "comment (local)";
   }
 
   private async reviewPending(environmentId: string, threadId: string): Promise<z.infer<typeof reviewCommentSchema>[]> {
@@ -200,6 +209,8 @@ export class SendHandler {
   }
 
   private async flush(instance: BoundInstance, threadId: string, title: string, environmentId: string | null): Promise<string> {
+    let sent = 0;
+    const parts: string[] = [];
     if (environmentId && (await this.reviewEditorRunning())) {
       const pending = await this.reviewPending(environmentId, threadId);
       if (pending.length > 0) {
@@ -209,67 +220,30 @@ export class SendHandler {
           input: { commentIds: pending.slice(0, 100).map((c) => c.id), threadId },
           outputSchema: z.object({ prompt: z.string() }).passthrough(),
         });
-        await this.deps.service.status(instance, `Sent ${pending.length} comment${pending.length === 1 ? "" : "s"} to ${title}`);
-        await this.annotate(instance, environmentId, threadId);
-        return `flushed ${pending.length} (review-editor)`;
+        sent += pending.length;
+        parts.push(`${pending.length} (review-editor)`);
       }
     }
     const local = this.deps.store.pendingComments(threadId);
-    if (local.length === 0) {
+    if (local.length > 0) {
+      const roots = rootsOf(instance);
+      const blocks = local.map((c, i) => `${i + 1}. \`${displayPath(c.path, roots)}:${lineSpan(c.startLine, c.endLine)}\`${c.modified ? " (unsaved changes in the editor)" : ""}\n${fence(capLines(c.snippet, 60).text, c.languageId)}\n${c.body}`);
+      const text = `Review comments from Helix (${local.length}). For each one, make the change or explain why not.\n\n${blocks.join("\n\n")}`;
+      await this.sendNow(threadId, text);
+      this.deps.store.markCommentsSent(local.map((c) => c.id));
+      sent += local.length;
+      parts.push(`${local.length} (local)`);
+    }
+    if (sent === 0) {
       await this.deps.service.status(instance, "No pending comments", "warning");
       return "flushed 0";
     }
-    const roots = rootsOf(instance);
-    const blocks = local.map((c, i) => `${i + 1}. \`${displayPath(c.path, roots)}:${lineSpan(c.startLine, c.endLine)}\`${c.modified ? " (unsaved changes in the editor)" : ""}\n${fence(capLines(c.snippet, 60).text, c.languageId)}\n${c.body}`);
-    const text = `Review comments from Helix (${local.length}). For each one, make the change or explain why not.\n\n${blocks.join("\n\n")}`;
-    await this.sendNow(threadId, text);
-    this.deps.store.markCommentsSent(local.map((c) => c.id));
-    await this.deps.service.status(instance, `Sent ${local.length} comment${local.length === 1 ? "" : "s"} to ${title}`);
-    await this.annotateLocal(instance, []);
-    return `flushed ${local.length} (local)`;
+    await this.deps.service.status(instance, `Sent ${sent} comment${sent === 1 ? "" : "s"} to ${title}`);
+    this.deps.commentsChanged();
+    return `flushed ${parts.join(" + ")}`;
   }
 
   private async titleOf(threadId: string): Promise<string> {
     return (await this.deps.service.threadInfo(threadId)).title ?? threadId;
-  }
-
-  // ----- annotations (when the fork offers them) ----------------------------
-
-  private readonly annotated = new Map<string, Set<string>>();
-
-  private async setAnnotations(instance: BoundInstance, byPath: Map<string, { line: number; text: string }[]>): Promise<void> {
-    if (!instance.summary.capabilities.includes("annotations")) return;
-    const previous = this.annotated.get(instance.key) ?? new Set<string>();
-    for (const [path, items] of byPath) await this.deps.service.bridge.call(instance.key, "annotations/set", { namespace: "bb-comments", path, items: items.map((i) => ({ ...i, severity: "info" })) }).catch(() => {});
-    for (const path of previous) if (!byPath.has(path)) await this.deps.service.bridge.call(instance.key, "annotations/set", { namespace: "bb-comments", path, items: [] }).catch(() => {});
-    this.annotated.set(instance.key, new Set(byPath.keys()));
-  }
-
-  private async annotateLocal(instance: BoundInstance, pending: LocalComment[]): Promise<void> {
-    const byPath = new Map<string, { line: number; text: string }[]>();
-    for (const c of pending) byPath.set(c.path, [...(byPath.get(c.path) ?? []), { line: c.endLine, text: `comment: ${c.body.split("\n")[0]}` }]);
-    await this.setAnnotations(instance, byPath);
-  }
-
-  /** Review Editor comments of this thread (unresolved) with the latest reply, under their lines. */
-  async annotate(instance: BoundInstance, environmentId: string | null, threadId: string): Promise<void> {
-    if (!environmentId || !instance.summary.capabilities.includes("annotations") || !(await this.reviewEditorRunning())) return;
-    const info = await this.deps.service.threadInfo(threadId);
-    if (!info.path) return;
-    const { comments } = await this.deps.sdk().plugins.callRpc({
-      pluginId: REVIEW_EDITOR,
-      method: "listComments",
-      input: { environmentId, states: ["open", "sent", "outdated"] },
-      outputSchema: z.object({ comments: z.array(reviewCommentSchema.extend({ replies: z.array(z.object({ author: z.string(), body: z.string() })).catch([]) })) }),
-    });
-    const byPath = new Map<string, { line: number; text: string }[]>();
-    for (const c of comments) {
-      if (c.threadId !== threadId && c.state === "open") continue;
-      const path = `${info.path.replace(/\/$/u, "")}/${c.path}`;
-      const reply = c.replies[c.replies.length - 1];
-      const text = `${c.state === "sent" ? "sent" : "comment"}: ${c.body.split("\n")[0]}${reply ? `  | ${reply.author}: ${reply.body.split("\n")[0]}` : ""}`;
-      byPath.set(path, [...(byPath.get(path) ?? []), { line: c.endLine, text: text.slice(0, 200) }]);
-    }
-    await this.setAnnotations(instance, byPath);
   }
 }

@@ -13,6 +13,7 @@ import type { HelixService } from "./service";
 type Sdk = BbPluginApi["sdk"];
 
 const RELOAD_DEBOUNCE_MS = 400;
+const WATCHED_DEBOUNCE_MS = 2500;
 const MAX_CHANGES = 2000;
 
 /** New-side hunks of a unified diff as location items. Deleted files are skipped. */
@@ -46,6 +47,8 @@ export interface FollowDeps {
   sdk(): Sdk;
   service: HelixService;
   settings(): Promise<{ autoReload: boolean; followAgent: boolean }>;
+  /** An agent turn's edits are being reloaded one by one (watch.ts). */
+  watching?(environmentId: string): boolean;
   log(message: string): void;
   /** Unsaved buffers were not reloaded: tell the user in bb too. */
   skipped(instance: BoundInstance, paths: string[]): void;
@@ -66,12 +69,15 @@ export class Follower {
   onEnvironmentChanged(environmentId: string): void {
     if (this.serving(environmentId).length === 0) return;
     clearTimeout(this.timers.get(environmentId));
+    // While a turn's edits are reloaded (with the reveal) as they land, this
+    // catch-all reload waits so it does not reload them first, unanimated.
+    const delay = this.deps.watching?.(environmentId) ? WATCHED_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
     this.timers.set(
       environmentId,
       setTimeout(() => {
         this.timers.delete(environmentId);
         void this.reloadEnvironment(environmentId);
-      }, RELOAD_DEBOUNCE_MS),
+      }, delay),
     );
   }
 
