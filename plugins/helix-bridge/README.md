@@ -19,6 +19,17 @@ The editor is `hxb` on PATH (setting `hxbPath` overrides). The bridge
 directory follows Helix: `$XDG_CACHE_HOME/helix/bridge` or
 `~/.cache/helix/bridge` (setting `bridgeDir` overrides).
 
+## Your position in messages
+
+Messages carry nothing about where you are in Helix unless you ask. The
+target button among the composer's actions (shown while a Helix serves the
+thread) attaches your file, line and selection to the message you are
+writing; click it again to take it out. To send it with every message, turn
+on `positionInMessages` (`bb plugin config helix-bridge set
+positionInMessages true`): a chip above the composer then shows the position
+and toggles it per thread. Agents can read it any time with
+`helix_selection`.
+
 ## Layout
 
 | Path | |
@@ -26,7 +37,7 @@ directory follows Helix: `$XDG_CACHE_HOME/helix/bridge` or
 | `host.ts`, `host/` | host entry: registry scan and watch, one socket per instance, events folded into coalesced signals, doctor, Ghostty config |
 | `server.ts`, `server/` | bindings, sends and comments, follow the agent, `bb hx`, tools, the app's RPC |
 | `shared/` | the protocol's types and the host contract |
-| `app.tsx`, `app/` | editor page and tab, terminal stream, renderer, key layer, HUD, status, composer chip, drafts |
+| `app.tsx`, `app/` | editor page and tab, terminal stream, renderer, key layer, HUD, status, composer position button and chip, drafts |
 | `assets/ghostty-vt.wasm` | the Ghostty VT core wterm loads (Apache-2.0, see NOTICE) |
 | `test/mock-bridge/` | a mock Helix bridge implementing PROTOCOL.md v1, with a control socket |
 | `spike/` | the renderer spike and drivers, results in `spike/RESULTS.md` |

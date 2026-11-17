@@ -9,7 +9,7 @@ import {
   experimental_THREAD_ACTION_GROUPS as ACTION_GROUPS,
   experimental_THREAD_INFO_ROW_GROUPS as ROW_GROUPS,
 } from "@get-bb/plugin-sdk/app";
-import { FromHelixReceipt, PositionChip } from "./app/composer/ComposerParts";
+import { FromHelixReceipt, PositionAction, PositionChip } from "./app/composer/ComposerParts";
 import { HelixOverlay } from "./app/overlay/HelixOverlay";
 import { commandRequest } from "./app/stores";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
@@ -71,6 +71,7 @@ export default definePluginApp((app) => {
   app.composer.customize({
     id: "helix",
     scopes: ["thread"],
+    actions: [{ id: "position", component: PositionAction }],
     banners: [
       { id: "position", component: PositionChip, chrome: "bare" },
       { id: "from-helix", component: FromHelixReceipt, chrome: "bare" },

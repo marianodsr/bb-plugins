@@ -31,7 +31,10 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
 ## Read what the user sees
 
 - `helix_selection`: the focused file, selections (or the cursor line) and
-  the text, and whether the buffer has unsaved changes.
+  the text, and whether the buffer has unsaved changes. The user's messages
+  do not carry their editor position unless they attach it (or turned on
+  `positionInMessages`); when "this", "here" or "the current file" is
+  unclear, call `helix_selection` instead of guessing.
 - `helix_diagnostics` `{ path?, severity? }`: what Helix's language servers
   report, errors first.
 - `helix_query`: the language server Helix already runs. Positions are
@@ -101,6 +104,7 @@ otherwise the one serving the calling thread, or the only one.
 | `bb hx doctor` | what is missing on this machine and the command to fix it |
 
 Settings (`bb plugin config helix-bridge set <key> <value>`): `hxbPath`
-(default `hxb` on PATH), `autoReload`, `followAgent`, `positionInMessages`,
+(default `hxb` on PATH), `autoReload`, `followAgent`, `positionInMessages`
+(default off: only messages the user attaches it to carry the position),
 `hud`, `fontFamily`, `fontSize`, `bridgeDir` (empty follows Helix's cache
 directory).

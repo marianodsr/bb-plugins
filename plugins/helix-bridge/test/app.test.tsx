@@ -37,6 +37,49 @@ async function positionChip() {
   });
 }
 
+async function composerPart(kind: "banners" | "actions", id: string, settings: Record<string, string | number | boolean>, text = "") {
+  const app = await loadPluginApp(() => import("../app"));
+  const customization = app.composerCustomizations.find((c) => c.id === "helix")!;
+  const part = customization[kind]!.find((b) => b.id === id)!;
+  return renderSlot(part as never, {} as never, {
+    rpc: { threadStatus: () => ({ instance, candidates: 1 }) },
+    settings,
+    composer: { scope: { kind: "thread", threadId: "thr_a" }, text },
+  });
+}
+
+describe("editor position off by default", () => {
+  it("shows no chip and adds nothing while the setting is off", async () => {
+    const chip = await composerPart("banners", "position", { positionInMessages: false });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(chip.queryByText("Sending position")).toBeNull();
+    expect(chip.queryByText("Position off")).toBeNull();
+    chip.lifecycle.unmount();
+  });
+
+  it("attaches the position to one message from the composer's button, and takes it out again", async () => {
+    const slot = await composerPart("actions", "position", { positionInMessages: false }, "look at this");
+    const button = await slot.findByRole("button", { name: /Attach your Helix position to this message \(main.go:12\)/u });
+    expect(slot.inspection.composer.draft.mentions).toEqual([]);
+    button.click();
+    await slot.findByRole("button", { name: "Remove the Helix position from this message" });
+    expect(slot.inspection.composer.draft.mentions).toMatchObject([{ kind: "plugin", provider: "position", id: "thr_a", label: "Helix position" }]);
+    expect(slot.inspection.composer.text.startsWith("look at this ")).toBe(true);
+    slot.getByRole("button", { name: "Remove the Helix position from this message" }).click();
+    await slot.findByRole("button", { name: /Attach your Helix position/u });
+    expect(slot.inspection.composer.draft.mentions).toEqual([]);
+    expect(slot.inspection.composer.text).toBe("look at this");
+    slot.lifecycle.unmount();
+  });
+
+  it("has no button while the position goes with every message", async () => {
+    const slot = await composerPart("actions", "position", { positionInMessages: true });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(slot.queryByRole("button")).toBeNull();
+    slot.lifecycle.unmount();
+  });
+});
+
 describe("editor position in the composer", () => {
   it("leaves the draft exactly as typed, key by key", async () => {
     const slot = await positionChip();

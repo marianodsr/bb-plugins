@@ -45,7 +45,7 @@ export default async function plugin(bb: BbPluginApi) {
     hxbPath: { type: "string", label: "Editor binary", description: "The Helix fork to run, a name on PATH or an absolute path.", default: "hxb" },
     autoReload: { type: "boolean", label: "Reload buffers when files change", description: "Reload Helix's unchanged buffers when bb sees files change. Buffers with unsaved changes are never touched.", default: true },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
-    positionInMessages: { type: "boolean", label: "Attach the editor position to messages", description: "Messages you send from a thread with a bound Helix carry one line with the file and line you are on. Each composer has its own toggle.", default: true },
+    positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
     fontFamily: { type: "string", label: "Editor font", description: "Overrides the font from your Ghostty config. Empty uses Ghostty's.", default: "" },
     fontSize: { type: "number", label: "Editor font size", description: "Overrides Ghostty's font-size. 0 uses Ghostty's.", experimental_schema: z.number().min(0).max(48), default: 0 },

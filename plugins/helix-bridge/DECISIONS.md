@@ -86,7 +86,7 @@ conservatively. Newest last.
     colours from Ghostty's `background`/`foreground` when set, else bb's).
     Font family, size and bold from Ghostty unless the plugin settings
     override them.
-19. **Editor position on messages**: SDK 0.6.132 has no pre-submit hook and
+19. **Editor position on messages** (default changed in decision 41): SDK 0.6.132 has no pre-submit hook and
     the dispatch hook cannot rewrite a message. The position is a chip above
     the composer with its toggle (per thread, remembered in this browser;
     default from the `positionInMessages` setting). On the submit gesture
@@ -202,3 +202,12 @@ conservatively. Newest last.
     not git's context.
 40. **Pane numbers** are assigned in layout order the first time a new pane
     appears, so a split made by `helix_show` gets the next number.
+
+## After daily use
+
+41. **The position is not sent unless asked**: `positionInMessages`
+    defaults to off. Off: no chip, nothing added at submit; a button among
+    the composer's actions (only while a connected Helix serves the thread)
+    puts the "Helix position" pill in the draft at once, as the user's own
+    edit, and takes it out on a second click. On: the chip and per-thread
+    toggle of decision 19, and no button.

@@ -1,7 +1,10 @@
 // Composer pieces for threads a Helix serves:
-// - the position chip and toggle: while on, a "Helix position" pill is added
-//   at the end of the draft at the moment of submit (never while typing), and
-//   the server resolves it into one agent-only line (file, line, selection);
+// - with "Attach the editor position to every message" on, the position chip
+//   and toggle: a "Helix position" pill is added at the end of the draft at
+//   the moment of submit (never while typing), and the server resolves it
+//   into one agent-only line (file, line, selection);
+// - with it off (the default), nothing is added and no chip shows; a button
+//   among the composer's actions puts the pill in this one message;
 // - the "From Helix" receipt over the composer when a draft lands.
 import { useEffect, useRef, useState } from "react";
 import { experimental_usePluginId as usePluginId, useComposer, useSettings } from "@get-bb/plugin-sdk/app";
@@ -95,7 +98,9 @@ export function PositionChip() {
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   const { data, position } = useThreadHelix(threadId);
   const serving = data?.instance?.status === "connected";
-  const fallback = values?.positionInMessages !== false;
+  // Off (the default): no chip, nothing added; PositionAction attaches it once.
+  const everyMessage = values?.positionInMessages === true;
+  const fallback = true;
   const [on, setOn] = useState<boolean>(() => (threadId ? (readToggle(storageKey(pluginId, threadId)) ?? fallback) : fallback));
   const chip = useRef<HTMLDivElement>(null);
   const focus = data?.instance?.focus ?? null;
@@ -103,7 +108,7 @@ export function PositionChip() {
 
   useEffect(() => {
     const element = chip.current;
-    if (!element || !threadId || !serving || !on) return;
+    if (!element || !threadId || !serving || !on || !everyMessage) return;
     const root = composerRoot(element);
     if (!root) return;
     const attach = () => {
@@ -126,9 +131,9 @@ export function PositionChip() {
       root.removeEventListener("pointerdown", onPointerDown, true);
       root.removeEventListener("click", onPointerDown, true);
     };
-  }, [composer, threadId, serving, on, pluginId]);
+  }, [composer, threadId, serving, on, pluginId, everyMessage]);
 
-  if (!threadId || !serving) return null;
+  if (!threadId || !serving || !everyMessage) return null;
   const toggle = () => {
     const next = !on;
     setOn(next);
@@ -152,6 +157,45 @@ export function PositionChip() {
         {where ? <span className={cn("truncate font-mono", on ? "" : "line-through decoration-muted-foreground/60")}>{where}</span> : null}
       </button>
     </div>
+  );
+}
+
+/**
+ * With the position off for every message: one button among the composer's
+ * actions that puts the "Helix position" pill in this message (and takes it
+ * out again). Shown only while a connected Helix serves the thread.
+ */
+export function PositionAction() {
+  const composer = useComposer();
+  const pluginId = usePluginId();
+  const { values } = useSettings();
+  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
+  const { data, position } = useThreadHelix(threadId);
+  if (!threadId || data?.instance?.status !== "connected" || values?.positionInMessages === true) return null;
+  const focus = data.instance.focus ?? null;
+  const where = position ? whereLabel(position.path, position.line, position.endLine) : whereLabel(focus?.path, focus?.line, focus?.endLine);
+  const attached = composer.draft.mentions.some((m) => isPositionPill(m, pluginId));
+  const label = attached ? "Remove the Helix position from this message" : `Attach your Helix position to this message${where ? ` (${where})` : ""}`;
+  const toggle = () => {
+    if (attached) composer.replace(withoutPositionPills(composer.draft, pluginId));
+    else composer.insert([...(composer.isEmpty ? [] : [" "]), { provider: POSITION_PROVIDER, id: threadId, label: PILL_LABEL }, " "], { at: "end" });
+    composer.focus?.();
+  };
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={attached}
+      title={label}
+      onClick={toggle}
+      data-helix-position-action={attached ? "attached" : "off"}
+      className={cn(
+        "inline-flex size-8 items-center justify-center rounded-md transition-colors duration-[120ms] ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        attached ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <Icon name="Target" className="size-4" />
+    </button>
   );
 }
 
