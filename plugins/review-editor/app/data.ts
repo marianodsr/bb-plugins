@@ -211,3 +211,12 @@ export function useCommentWrites(file: FileRef | null) {
 
   return { create, update, remove, setState, reply, markSent, acknowledge, save };
 }
+
+/** Whether a Helix is open for this workspace (Helix Bridge's Open in Helix). */
+export function useHelixStatus(environmentId: string | null, threadId: string | null) {
+  return experimental_useRpcQuery({ contract, method: "helixStatus", input: { environmentId: environmentId ?? "none", ...(threadId ? { threadId } : {}) }, enabled: environmentId !== null });
+}
+
+export function useOpenInHelix() {
+  return experimental_useRpcMutation({ contract, method: "openInHelix" });
+}

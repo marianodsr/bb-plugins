@@ -329,6 +329,16 @@ export const rpcContract = defineRpcContract({
     input: z.object({ ids: z.array(commentIdSchema).min(1).max(200) }).strict(),
     output: z.object({ acknowledged: z.array(z.string()) }),
   },
+  helixStatus: {
+    experimental_description: "Whether Helix Bridge has a Helix open for this workspace (for Open in Helix).",
+    input: z.object({ environmentId: environmentIdSchema, threadId: threadIdSchema.optional() }).strict(),
+    output: z.object({ available: z.boolean() }),
+  },
+  openInHelix: {
+    experimental_description: "Open a changed file in the Helix serving this workspace, with a review of the uncommitted changes active.",
+    input: z.object({ environmentId: environmentIdSchema, threadId: threadIdSchema.optional(), path: relativePathSchema }).strict(),
+    output: z.object({ opened: z.boolean(), message: z.string() }),
+  },
   replyToComment: {
     experimental_description: "Reply to a comment as the user.",
     input: z.object({ commentId: commentIdSchema, body: replyBodySchema }).strict(),

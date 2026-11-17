@@ -12,7 +12,7 @@ const passthrough: StandardSchemaV1 = {
 const METHODS = [
   "resolveHostFile", "readFile", "readBase", "saveFile", "changedFiles", "listComments", "getComment",
   "createComment", "updateComment", "deleteComment", "setCommentState", "acknowledgeComments", "replyToComment", "syncAnchors",
-  "compilePrompt", "markSent", "sendToThread",
+  "compilePrompt", "markSent", "sendToThread", "helixStatus", "openInHelix",
 ] as const satisfies readonly (keyof RpcContract)[];
 
 type Missing = Exclude<keyof RpcContract, (typeof METHODS)[number]>;

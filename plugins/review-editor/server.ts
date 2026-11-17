@@ -23,6 +23,33 @@ export const SKILL_NAME = "review-editor";
 // on it. Whether it is installed is re-checked at most every 30 s.
 const HELIX_BRIDGE = "helix-bridge";
 
+/** Helix Bridge's Open in Helix, when it is installed. */
+function helixBridge(bb: BbPluginApi) {
+  const installed = async () => {
+    const listed = (await bb.sdk.plugins.list()) as unknown as { id: string; status?: string }[] | { plugins: { id: string; status?: string }[] };
+    const plugins = Array.isArray(listed) ? listed : listed.plugins;
+    return plugins.some((p) => p.id === HELIX_BRIDGE && (p.status === undefined || p.status === "running"));
+  };
+  return {
+    status: async (environmentId: string, threadId?: string) => {
+      if (!(await installed().catch(() => false))) return { available: false };
+      const result = await bb.sdk.plugins
+        .callRpc({ pluginId: HELIX_BRIDGE, method: "environmentStatus", input: { environmentId, ...(threadId ? { threadId } : {}) }, outputSchema: z.object({ serves: z.boolean() }).passthrough() })
+        .catch(() => ({ serves: false }));
+      return { available: result.serves };
+    },
+    open: async (environmentId: string, path: string, threadId?: string) => {
+      if (!(await installed().catch(() => false))) return { opened: false, message: "Helix Bridge is not installed" };
+      return bb.sdk.plugins.callRpc({
+        pluginId: HELIX_BRIDGE,
+        method: "openInReview",
+        input: { environmentId, ...(threadId ? { threadId } : {}), path, target: "uncommitted" },
+        outputSchema: z.object({ opened: z.boolean(), message: z.string() }),
+      });
+    },
+  };
+}
+
 function helixBridgeNotifier(bb: BbPluginApi) {
   let known: { at: number; present: boolean } | null = null;
   const present = async () => {
@@ -54,6 +81,7 @@ export default async function plugin(bb: BbPluginApi) {
     log: (message) => bb.log.warn(message),
   });
 
+  const helix = helixBridge(bb);
   bb.rpc.register(rpcContract, {
     resolveHostFile: ({ hostId, path }) => service.resolveHostFile(hostId, path),
     readFile: (file) => service.readFile(file),
@@ -68,6 +96,8 @@ export default async function plugin(bb: BbPluginApi) {
     setCommentState: ({ id, state }) => service.setState(id, state, "user"),
     acknowledgeComments: ({ ids }) => ({ acknowledged: service.acknowledge(ids) }),
     replyToComment: ({ commentId, body }) => service.reply(commentId, body, "user", null),
+    helixStatus: ({ environmentId, threadId }) => helix.status(environmentId, threadId),
+    openInHelix: ({ environmentId, path, threadId }) => helix.open(environmentId, path, threadId),
     syncAnchors: (file) => service.syncFile(file),
     compilePrompt: ({ commentIds }) => service.compile(commentIds),
     markSent: async ({ commentIds, threadId }) => ({ comments: await service.markSent(commentIds, threadId) }),

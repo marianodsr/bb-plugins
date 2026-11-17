@@ -22,7 +22,7 @@ import {
 import type { Comment } from "../../server/contract";
 import { compilePrompt } from "../../server/prompt";
 import { SentTo } from "./CommentNote";
-import { useChangedFiles, useCommentWrites, useEnvironmentComments } from "../data";
+import { useChangedFiles, useCommentWrites, useEnvironmentComments, useHelixStatus, useOpenInHelix } from "../data";
 import { SEVERITY_HUE, awaitingAck, groupReview, lineLabel, sendable, type ReviewFilter, type ReviewRow as Row } from "../model/comments";
 import { handoffMetadata } from "../model/comments";
 
@@ -49,6 +49,20 @@ export function ReviewTab({ threadId, environment }: ExperimentalThreadTabProps)
   const environmentId = environment?.id ?? null;
   const changed = useChangedFiles(environmentId);
   const comments = useEnvironmentComments(environmentId);
+  // Helix Bridge: open a changed file in the user's Helix, with the review active.
+  const helix = useHelixStatus(environmentId, threadId);
+  const openInHelix = useOpenInHelix();
+  const helixAvailable = helix.data?.available === true;
+  const toHelix = useCallback(
+    (path: string) => {
+      if (environmentId === null) return;
+      openInHelix.mutate({ environmentId, path, ...(threadId ? { threadId } : {}) }).then(
+        (result) => (result.opened ? toast.success(result.message) : toast.error(result.message)),
+        (cause: unknown) => toast.error(String(cause)),
+      );
+    },
+    [environmentId, openInHelix, threadId],
+  );
   const writes = useCommentWrites(environmentId === null ? null : { environmentId, path: "__review__" });
   const navigate = useBbNavigate();
   const { variants, transition } = useKitMotion();
@@ -123,6 +137,7 @@ export function ReviewTab({ threadId, environment }: ExperimentalThreadTabProps)
         enabled: current?.kind === "comment",
       },
       { key: "a", handler: () => setFilter((value) => (value === "open" ? "all" : "open")), description: "Show resolved comments too", group: "View" },
+      { key: "h", handler: () => current && toHelix(current.group.path), description: "Open in Helix", group: "Navigation", enabled: helixAvailable && current !== null },
     ],
     { scope: page },
   );
@@ -171,7 +186,7 @@ export function ReviewTab({ threadId, environment }: ExperimentalThreadTabProps)
                 index += 1;
                 const fileIndex = index;
                 return (
-                  <motion.li key={group.path} layout="position" transition={transition("shift")} variants={variants.listItem} initial="hidden" animate="visible" exit="exit">
+                  <motion.li key={group.path} layout="position" transition={transition("shift")} variants={variants.listItem} initial="hidden" animate="visible" exit="exit" className="group/file relative">
                     <button
                       ref={(element) => {
                         if (element) rowRefs.current.set(fileIndex, element);
@@ -213,6 +228,20 @@ export function ReviewTab({ threadId, environment }: ExperimentalThreadTabProps)
                         </span>
                       ) : null}
                     </button>
+                    {helixAvailable ? (
+                      <button
+                        type="button"
+                        onClick={() => toHelix(group.path)}
+                        className={cn(
+                          "absolute right-16 top-1 hidden h-6 items-center rounded-md border border-border/60 bg-background px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:inline-flex focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/file:inline-flex",
+                          cursor === fileIndex && "inline-flex",
+                        )}
+                        title="Open in Helix, with the review active (H)"
+                        data-open-in-helix
+                      >
+                        Open in Helix
+                      </button>
+                    ) : null}
                     {group.comments.length > 0 ? (
                       <ul className="pb-1">
                         {group.comments.map((comment) => {
