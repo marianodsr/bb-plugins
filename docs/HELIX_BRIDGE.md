@@ -57,7 +57,7 @@ plugin authoring references).
   3. the bb environment whose path contains the instance's workspace root,
      then the most recently active thread in it.
 - **Follow the agent.** Subscribes to bb's environment change events and turn
-  completion. Debounced: `editor/reload`; then `changes/set` built from the
+  completion. Debounced: `editor/reload`; then `locations/set` (list `changes`) built from the
   bundled Git plugin's changed files and hunks (uncommitted, plus what the
   turn committed). Shows `skippedModified` paths to the user rather than
   forcing.
