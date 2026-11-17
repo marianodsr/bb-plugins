@@ -5,12 +5,13 @@
 // resolved by the user or the reviewer acknowledged the agent's resolution.
 //
 // Comments come from Review Editor when it runs (comments made there or from
-// Helix), else from this plugin's own pending list. Review Editor tells only
-// its own frontend about changes, so the list is re-read when this plugin
-// changes a comment and every few seconds; a file is re-sent only when its
-// items changed, or to an instance that just connected or opened files.
+// Helix), else from this plugin's own pending list. Review Editor calls
+// `commentsChanged` after every comment write, and that file is re-read at
+// once; everything is also re-read when this plugin changes a comment and
+// every 30 s as a fallback. A file is re-sent only when its items changed, or
+// to an instance that just connected or opened files.
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, normalize, sep } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { BoundInstance } from "./bridge";
@@ -21,7 +22,7 @@ import type { LocalComment, Store } from "./store";
 type Sdk = BbPluginApi["sdk"];
 
 export const NAMESPACE = "bb-review";
-const POLL_MS = 3000;
+const POLL_MS = 30_000;
 const MAX_TEXT = 2000;
 
 export interface AnnotationItem {
@@ -97,7 +98,9 @@ export class Annotator {
   /** Per instance: the open-document count last seen (opening files re-sends). */
   private readonly documents = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
-  private running: Promise<void> | null = null;
+  /** Every refresh runs on this chain, one at a time. */
+  private chain: Promise<void> = Promise.resolve();
+  private fullQueued = false;
 
   constructor(private readonly deps: AnnotatorDeps) {}
 
@@ -144,14 +147,57 @@ export class Annotator {
     if (reopen) void this.refresh();
   }
 
-  /** Re-read comments and push what changed. Serialised; overlapping calls share a run. */
+  /**
+   * Re-read every comment and push what changed. Calls made before a queued
+   * run starts share it; a call during a run queues one more, so a write that
+   * lands mid-read is never missed.
+   */
   refresh(): Promise<void> {
-    this.running ??= this.refreshOnce()
-      .catch((error: unknown) => this.deps.log(`annotations refresh failed: ${String(error)}`))
-      .finally(() => {
-        this.running = null;
-      });
-    return this.running;
+    if (this.fullQueued) return this.chain;
+    this.fullQueued = true;
+    return this.enqueue(() => {
+      this.fullQueued = false;
+      return this.refreshOnce();
+    });
+  }
+
+  /** Review Editor changed a comment on one file (relative to the environment): re-send that file. */
+  refreshFile(environmentId: string, path: string): Promise<void> {
+    return this.enqueue(() => this.refreshFileOnce(environmentId, path));
+  }
+
+  private enqueue(work: () => Promise<void>): Promise<void> {
+    const run = this.chain.then(work).catch((error: unknown) => this.deps.log(`annotations refresh failed: ${String(error)}`));
+    this.chain = run;
+    return run;
+  }
+
+  private async refreshFileOnce(environmentId: string, path: string): Promise<void> {
+    const instances = this.targets().get(environmentId);
+    const root = instances?.[0]?.environmentPath;
+    if (!instances || !root || isAbsolute(path)) return;
+    const relative = normalize(path);
+    if (relative === ".." || relative.startsWith(`..${sep}`)) return;
+    const absolute = join(root, relative);
+    const { comments } = await this.deps.sdk().plugins.callRpc({
+      pluginId: REVIEW_EDITOR,
+      method: "listComments",
+      input: { environmentId, path: relative, states: ["open", "sent", "outdated", "resolved"] },
+      outputSchema: z.object({ comments: z.array(commentSchema) }),
+    });
+    const items = comments.flatMap(commentItems);
+    const threads = new Set(instances.map((i) => i.threadId).filter((t): t is string => Boolean(t)));
+    for (const threadId of threads) for (const comment of this.deps.store.pendingComments(threadId)) if (comment.path === absolute) items.push(...localItems(comment));
+    const capped = items.slice(0, 500);
+    const hash = digest(capped);
+    for (const instance of instances) {
+      const sent = this.sent.get(instance.key) ?? new Map<string, string>();
+      if (capped.length === 0 ? !sent.has(absolute) : sent.get(absolute) === hash) continue;
+      await this.set(instance, absolute, capped);
+      if (capped.length === 0) sent.delete(absolute);
+      else sent.set(absolute, hash);
+      this.sent.set(instance.key, sent);
+    }
   }
 
   private async refreshOnce(): Promise<void> {

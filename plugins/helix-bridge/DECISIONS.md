@@ -146,11 +146,14 @@ conservatively. Newest last.
     never reloads an agent's edit first, unanimated. Granularity is one
     edit: Claude Code and ACP emit no `item/fileChange/outputDelta`, and
     Codex's is the patch tool's result text, not the patch being written.
-31. **Comments in the code**: namespace `bb-review`. Review Editor's comments
-    for each environment an annotation-capable Helix serves are re-read when
-    this plugin changes one and every 3 s; a file is re-sent only when its
-    items change, and everything again when an instance connects or opens
-    files. Open, sent and outdated comments show with a sign, their text and
+31. **Comments in the code**: namespace `bb-review`. After every comment
+    write Review Editor calls this plugin's `commentsChanged` RPC with the
+    environment and path (fire and forget, only when this plugin is
+    installed), and that file is re-read and re-sent at once: 34 ms from the
+    write returning to the annotation in Helix, measured. Everything is also
+    re-read when this plugin changes a comment and every 30 s as a fallback;
+    a file is re-sent only when its items change, and everything again when
+    an instance connects or opens files. Open, sent and outdated comments show with a sign, their text and
     replies; an agent's resolution shows until the reviewer acknowledges it;
     a user's resolution clears it.
 32. **A comment Review Editor refuses** (its lines exist only in the unsaved

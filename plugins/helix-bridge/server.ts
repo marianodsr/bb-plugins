@@ -264,6 +264,10 @@ export default async function plugin(bb: BbPluginApi) {
         hud: values.hud,
       };
     },
+    commentsChanged: ({ environmentId, path }) => {
+      void annotator.refreshFile(environmentId, path);
+      return { accepted: true };
+    },
     editorTerminal: ({ threadId }) => {
       // One session per thread: concurrent opens (page and tab) share one call.
       const running = openingTerminals.get(threadId);

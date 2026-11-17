@@ -93,6 +93,11 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: ghosttyConfigSchema.extend({ hud: z.boolean() }),
   },
+  commentsChanged: {
+    experimental_description: "Review Editor wrote a comment on this file: re-send its annotations to Helix. Returns at once.",
+    input: z.object({ environmentId: id, path: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ accepted: z.boolean() }),
+  },
   editorTerminal: {
     experimental_description: "The thread's Helix terminal session, started if needed.",
     input: z.object({ threadId: id }).strict(),

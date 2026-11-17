@@ -391,33 +391,46 @@ describe("review comments in the code", () => {
     expect(commentItems(comment({ state: "resolved", resolvedBy: "agent", acknowledgedAt: 1 }))).toEqual([]);
   });
 
-  it("sets annotations at once for a Review Editor comment, updates them with replies, and clears them", async () => {
+  it("sets annotations at once for a Review Editor comment, updates them when Review Editor says so, and clears them", async () => {
     let comments: ReviewComment[] = [comment({})];
+    const reads: unknown[] = [];
     await teardown();
     await setup({ BB_THREAD_ID: "thr_term" }, {
       plugins: {
         list: async () => [{ id: "review-editor", status: "running" }],
-        callRpc: async ({ method }: { method: string }) => {
+        callRpc: async ({ method, input }: { method: string; input: unknown }) => {
+          reads.push(input);
           if (method === "listComments") return { comments };
           throw new Error(`unexpected ${method}`);
         },
       },
     });
-    // The background service polls Review Editor every 3 s.
+    // The background service starts the annotator (and its 30 s fallback).
     fake.harness.sdk.stub("subscribe", () => () => {});
     const service = fake.harness.behavior.runService("environment-changes");
     const file = join(workspace, "main.go");
     const annotations = () => (mock.control({ cmd: "state" }).annotations as Record<string, { text: string; kind: string }[]>)[file];
+    // Connecting sends everything.
     await until(() => annotations()?.length === 1, 8000);
     expect(annotations()[0]).toMatchObject({ text: "why?", kind: "comment", sign: "●", line: 10, endLine: 12 });
+    // Review Editor's call after a write re-reads that one file, well before any poll.
+    const changed = () => fake.harness.behavior.callRpc("commentsChanged", { environmentId: "env_test", path: "main.go" });
     comments = [comment({ state: "sent", replies: [{ author: "agent", body: "on it" }] as never })];
-    await until(() => annotations()?.length === 2, 8000);
+    expect(await changed()).toEqual({ accepted: true });
+    await until(() => annotations()?.length === 2, 2000);
     expect(annotations()[1]).toMatchObject({ text: "Agent: on it", kind: "reply" });
+    expect(reads.at(-1)).toMatchObject({ environmentId: "env_test", path: "main.go" });
     comments = [comment({ state: "resolved", resolvedBy: "user" })];
-    await until(() => annotations() === undefined, 8000);
-    // A new connection gets them again.
+    await changed();
+    await until(() => annotations() === undefined, 2000);
     comments = [comment({})];
-    await until(() => annotations()?.length === 1, 8000);
+    await changed();
+    await until(() => annotations()?.length === 1, 2000);
+    // A path outside the environment is ignored.
+    const before = reads.length;
+    await fake.harness.behavior.callRpc("commentsChanged", { environmentId: "env_test", path: "../outside.go" });
+    await wait(100);
+    expect(reads.length).toBe(before);
     service.controller.abort();
     await service.done.catch(() => {});
   });
