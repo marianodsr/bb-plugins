@@ -10,11 +10,10 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "../../kit";
 import { useHelixRpc } from "../data";
 import { installKeyLayer, type OptionAsAlt } from "../terminal/keys";
-import { createRenderer, type TerminalRenderer } from "../terminal/renderer";
+import { createRenderer, type SurfaceFont, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
 
 const WASM_URL = "/api/v1/plugins/helix-bridge/http/wterm-ghostty.wasm";
-const FALLBACK_FONTS = '"Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace';
 /** No reveal within this long after a key in the tree. */
 const QUIET_MS = 1500;
 const REVEAL_DEBOUNCE_MS = 250;
@@ -45,7 +44,7 @@ export function TreePane({
 }: {
   threadId: string;
   width: number;
-  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; optionAsAlt: OptionAsAlt; background: string | null; foreground: string | null };
+  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; faces?: SurfaceFont["faces"]; boldIsBright: boolean | null; optionAsAlt: OptionAsAlt; background: string | null; foreground: string | null };
   handle: { current: TreeHandle | null };
   /** yazi quit (or its session ended): hide the pane. */
   onQuit(): void;
@@ -153,9 +152,8 @@ export function TreePane({
     let removeKeys: (() => void) | null = null;
     void createRenderer(element, {
       wasmUrl: WASM_URL,
-      fontFamily: `${config.fontFamily ? `"${config.fontFamily}", ` : ""}${FALLBACK_FONTS}`,
-      fontSize: config.fontSize ?? 13,
-      fontWeight: /bold/iu.test(config.fontStyle ?? "") ? "bold" : "normal",
+      font: { family: config.fontFamily, size: config.fontSize ?? 13, style: config.fontStyle, faces: config.faces },
+      boldIsBright: config.boldIsBright === true,
       background: config.background,
       foreground: config.foreground,
       onInput: (data) => {
@@ -196,7 +194,7 @@ export function TreePane({
       renderer?.dispose();
       handle.current = null;
     };
-  }, [terminalId, config.fontFamily, config.fontSize, config.fontStyle, sdk, handle]);
+  }, [terminalId, config.fontFamily, config.fontSize, config.fontStyle, config.faces, config.boldIsBright, sdk, handle]);
 
   return (
     <div className="relative flex min-h-0 shrink-0 flex-col bg-background" style={{ width }} data-helix-tree={threadId}>

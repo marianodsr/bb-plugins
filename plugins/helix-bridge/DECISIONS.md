@@ -243,3 +243,30 @@ conservatively. Newest last.
     focus is anywhere in the surface, because the tree changes its width.
     Quitting yazi (any exit) closes its session and hides the pane; Helix
     exiting closes the tree.
+47. **Ghostty's font style** reaches both renderers through an alias
+    family: its normal weight is the base face (`font-style`, say Bold) and
+    its bold weight `font-style-bold` (else the family's Bold, the same face
+    when the base is Bold, as in Ghostty), by `local()` full and PostScript
+    names that the host resolves with fontconfig (`fc-list`), with name
+    guesses without it. wterm's WebGL atlas asks for "<bold?> <size>px
+    <family>" and had no base weight, so it drew Regular. The faces are
+    loaded before the first glyph is rasterised and the surface switches to
+    the alias if it loads later. Measured (spike/font-check.mjs, ink per
+    cell, Bold against Regular): WebGL 1.358 editor / 1.090 tree, DOM 1.368 /
+    1.088. `bold-is-bright` moves bold cells in palette 0-7 to 8-15 at the
+    cell source (both renderers). The plugin's `fontStyle` setting overrides
+    Ghostty's `font-style`.
+48. **Whole-pixel cells**: the WebGL renderer samples its atlas with
+    NEAREST at col x charWidth x dpr; a fractional product doubles or drops
+    glyph columns (jagged text). letter-spacing rounds the advance to whole
+    device pixels and the row height is rounded too; both are redone when
+    the pixel ratio changes (another display, scaling, zoom), with a
+    repaint. Layout works in 1/64 px, so at 1.5x and 3x a small drift
+    remains. Measured (spike/dpr-check.mjs, mismatch between copies of one
+    glyph, 0 = identical): before 0.217 / 0.124 / 0.022 / 0.067 at 1x, 1.5x,
+    2x, 3x; after 0 / 0.021 / 0 / 0.006; DOM 0 / 0.028 / 0 / 0.
+49. **Diagnosable**: with the HUD on it shows the renderer, the font in
+    use (and whether it is the requested face), the pixel ratio and the cell
+    in device pixels. A family not installed on the computer running bb's
+    app (or a face that did not load) shows a one-line notice under the
+    editor.

@@ -8,8 +8,9 @@
 // every 30 s, well inside the 5-minute idle window).
 import { experimental_defineHostEntry, type ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { hostContract, hostSignals } from "./shared/host-contract";
-import { readGhosttyConfig, resolveExecutable, runDoctor } from "./host/doctor";
+import { readGhosttyConfig, resolveExecutable, resolveFaces, runDoctor } from "./host/doctor";
 import { prepareYazi, yaEmit } from "./host/yazi";
+import { changedFiles, diffText, revParse, snapshot, subject } from "./host/git";
 import { InstanceManager, defaultBridgeDir } from "./host/manager";
 
 type Context = ExperimentalHostRpcContext<typeof hostSignals>;
@@ -78,6 +79,24 @@ const entry = experimental_defineHostEntry({
       return runDoctor({ bridgeDir: current.bridgeDir, hxbPath, fontFamily, instances: current.list() });
     },
     perfMode: async ({ instanceId, mode }, context) => ({ found: await managerFor(null, context).setPerfMode(instanceId, mode) }),
+    gitRead: async ({ cwd, op, rev, exclude }) => {
+      try {
+        switch (op) {
+          case "revParse":
+            return { sha: rev ? await revParse(cwd, rev) : null, error: null };
+          case "subject":
+            return { subject: rev ? await subject(cwd, rev) : "", error: null };
+          case "snapshot":
+            return { ...(await snapshot(cwd)), error: null };
+          case "changedFiles":
+            return { files: rev ? await changedFiles(cwd, rev, exclude ?? []) : [], error: null };
+          case "diff":
+            return { diff: rev ? await diffText(cwd, rev) : "", error: null };
+        }
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    },
     yaziPrepare: (_input, context) => prepareYazi(context.experimental_paths.dataDir),
     yaziEmit: async ({ clientId, name, args }) => {
       const ya = resolveExecutable("ya");
@@ -87,7 +106,11 @@ const entry = experimental_defineHostEntry({
         (error: unknown) => ({ ok: false, error: String(error) }),
       );
     },
-    ghosttyConfig: () => readGhosttyConfig(),
+    ghosttyConfig: async ({ fontFamily, fontStyle }) => {
+      const config = readGhosttyConfig();
+      const effective = { ...config, ...(fontFamily ? { fontFamily } : {}), ...(fontStyle ? { fontStyle } : {}) };
+      return { ...effective, faces: await resolveFaces(effective) };
+    },
   },
   dispose: () => {
     manager?.dispose();

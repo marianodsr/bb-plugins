@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
-import type { DoctorCheck, GhosttyConfig, InstanceSummary } from "../shared/host-contract";
+import type { DoctorCheck, FontFace, GhosttyConfig, InstanceSummary } from "../shared/host-contract";
 import { PROTOCOL_VERSION } from "../shared/protocol";
 
 export const INSTALL_COMMAND =
@@ -172,6 +172,42 @@ export async function runDoctor(input: {
 }
 
 /** Ghostty's config, read only: `$XDG_CONFIG_HOME/ghostty/config`, `~/.config/ghostty/config`, then the macOS app-support path. */
+/**
+ * One installed face of a family by style name, through fontconfig. Null
+ * without fontconfig or when nothing matches; the surface then falls back to
+ * name guesses.
+ */
+export function resolveFace(family: string, style: string): Promise<FontFace | null> {
+  const fcList = resolveExecutable("fc-list");
+  if (!fcList || !family || !style || /[:\\]/u.test(family + style)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(fcList, ["-f", "%{family}\t%{style}\t%{fullname}\t%{postscriptname}\n", `${family}:style=${style}`], { timeout: 5000 }, (error, stdout) => {
+      if (error) return resolve(null);
+      const wanted = style.toLowerCase();
+      const rows = stdout.split("\n").filter(Boolean).map((l) => l.split("\t"));
+      // fontconfig lists every face of the family; keep the one whose style is this one.
+      const row = rows.find((r) => (r[1] ?? "").split(",").some((s) => s.trim().toLowerCase() === wanted));
+      if (!row) return resolve(null);
+      const fullName = (row[2] ?? "").split(",")[0]!.trim();
+      resolve(fullName ? { fullName, postscriptName: (row[3] ?? "").trim() || null } : null);
+    });
+  });
+}
+
+/** The faces the surface needs for this font: Ghostty's base style, and the bold and italic styles. */
+export async function resolveFaces(config: Pick<GhosttyConfig, "fontFamily" | "fontStyle" | "fontStyleBold" | "fontStyleItalic" | "fontStyleBoldItalic">): Promise<NonNullable<GhosttyConfig["faces"]>> {
+  const family = config.fontFamily ?? "";
+  const off = (v: string | null | undefined) => !v || v === "false";
+  const base = config.fontStyle && config.fontStyle !== "false" ? await resolveFace(family, config.fontStyle) : null;
+  // With a base style, bold cells use font-style-bold, else the family's Bold
+  // (the same face when the base is Bold, as in Ghostty).
+  const boldStyle = !off(config.fontStyleBold) ? config.fontStyleBold! : base ? "Bold" : null;
+  const bold = boldStyle ? ((await resolveFace(family, boldStyle)) ?? base) : null;
+  const italic = !off(config.fontStyleItalic) ? await resolveFace(family, config.fontStyleItalic!) : null;
+  const boldItalic = !off(config.fontStyleBoldItalic) ? await resolveFace(family, config.fontStyleBoldItalic!) : null;
+  return { regular: base, bold, italic, boldItalic };
+}
+
 export function readGhosttyConfig(env: NodeJS.ProcessEnv = process.env): GhosttyConfig {
   const home = env.HOME || homedir();
   const candidates = [
@@ -186,6 +222,9 @@ export function readGhosttyConfig(env: NodeJS.ProcessEnv = process.env): Ghostty
     fontFamily: null,
     fontSize: null,
     fontStyle: null,
+    fontStyleBold: null,
+    fontStyleItalic: null,
+    fontStyleBoldItalic: null,
     boldIsBright: null,
     // Absent file: Option as Alt (the owner's choice and what Helix needs).
     optionAsAlt: "true",
@@ -221,6 +260,15 @@ export function readGhosttyConfig(env: NodeJS.ProcessEnv = process.env): Ghostty
       }
       case "font-style":
         config.fontStyle = value || null;
+        break;
+      case "font-style-bold":
+        config.fontStyleBold = value || null;
+        break;
+      case "font-style-italic":
+        config.fontStyleItalic = value || null;
+        break;
+      case "font-style-bold-italic":
+        config.fontStyleBoldItalic = value || null;
         break;
       case "bold-is-bright":
         config.boldIsBright = value === "true";

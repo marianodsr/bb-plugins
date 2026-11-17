@@ -387,10 +387,10 @@ export class HelixService {
   }
 
   /** The user's Ghostty config on a machine, read only. */
-  async ghostty(hostId: string | null): Promise<GhosttyConfig> {
+  async ghostty(hostId: string | null, overrides: { fontFamily?: string; fontStyle?: string } = {}): Promise<GhosttyConfig> {
     const target = hostId ?? (await this.defaultHost());
     if (!target) throw new BridgeFailure("not_found", "no connected machine");
-    return (await this.deps.host.call("ghosttyConfig", {}, { hostId: target, timeoutMs: 10_000 })) as GhosttyConfig;
+    return (await this.deps.host.call("ghosttyConfig", overrides, { hostId: target, timeoutMs: 10_000 })) as GhosttyConfig;
   }
 
   async perfMode(hostId: string, instanceId: string, mode: "normal" | "quiet" | "off"): Promise<boolean> {

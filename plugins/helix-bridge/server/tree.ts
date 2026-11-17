@@ -4,6 +4,7 @@
 // `bb hx tree-open`, which opens it in the Helix serving the thread; the app
 // asks for `reveal` when Helix's focused file changes.
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { HelixService } from "./service";
 
@@ -15,12 +16,15 @@ export interface TreeDeps {
   sdk(): Sdk;
   service: HelixService;
   hostCall(method: "yaziPrepare" | "yaziEmit", input: unknown, hostId: string): Promise<unknown>;
+  /** The bridge directory setting; empty follows Helix's cache directory. */
+  bridgeDir(): Promise<string>;
 }
 
 interface YaziSetup {
   yazi: string | null;
   ya: string | null;
   configDir: string | null;
+  opener?: string | null;
 }
 
 /** A stable yazi client id per thread (yazi wants a globally unique number). */
@@ -55,10 +59,12 @@ export class Tree {
       if (!info.hostId || !info.path) return { terminalId: null, created: false, missing: "This thread has no workspace to show." };
       const setup = (await this.deps.hostCall("yaziPrepare", {}, info.hostId)) as YaziSetup;
       if (!setup.yazi || !setup.configDir) return { terminalId: null, created: false, missing: process.platform === "darwin" ? "brew install yazi" : "Install yazi: https://yazi-rs.github.io/docs/installation" };
-      const vars = [`BB_THREAD_ID=${threadId}`, `YAZI_CONFIG_HOME=${setup.configDir}`];
-      // yazi's own `edit` opener runs $EDITOR when the user's yazi.toml keeps it.
-      const editor = `EDITOR=${shellQuote(`"\${BB_CLI:-bb}" hx tree-open`)}`;
-      const command = `${vars.map(shellQuote).join(" ")} ${editor} exec ${shellQuote(setup.yazi)} --client-id ${treeClientId(threadId)} ${shellQuote(info.path)}`;
+      const opener = setup.opener ?? join(setup.configDir, "helix-open");
+      const bridgeDir = (await this.deps.bridgeDir()).trim();
+      // The opener talks to Helix's socket; yazi's own `edit` opener runs
+      // $EDITOR when the user's yazi.toml keeps it, so that is the same script.
+      const vars = [`BB_THREAD_ID=${threadId}`, `YAZI_CONFIG_HOME=${setup.configDir}`, `HELIX_BRIDGE_OPEN=${opener}`, `EDITOR=${opener}`, ...(bridgeDir ? [`HELIX_BRIDGE_DIR=${bridgeDir}`] : [])];
+      const command = `${vars.map(shellQuote).join(" ")} exec ${shellQuote(setup.yazi)} --client-id ${treeClientId(threadId)} ${shellQuote(info.path)}`;
       const created = await this.deps.sdk().terminals.create({ scope: { kind: "thread", threadId }, title: TREE_TITLE, cols: 30, rows: 48, start: { mode: "command", command } });
       return { terminalId: created.id, created: true, missing: null };
     })().finally(() => this.opening.delete(threadId));

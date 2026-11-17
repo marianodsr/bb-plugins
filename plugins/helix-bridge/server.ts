@@ -49,6 +49,7 @@ export default async function plugin(bb: BbPluginApi) {
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
     fontFamily: { type: "string", label: "Editor font", description: "Overrides the font from your Ghostty config. Empty uses Ghostty's.", default: "" },
+    fontStyle: { type: "string", label: "Editor font style", description: "Overrides Ghostty's font-style (for example Bold, Medium, Regular). Empty uses Ghostty's.", default: "" },
     fontSize: { type: "number", label: "Editor font size", description: "Overrides Ghostty's font-size. 0 uses Ghostty's.", experimental_schema: z.number().min(0).max(48), default: 0 },
     bridgeDir: { type: "string", label: "Bridge directory", description: "Where Helix registers its sockets. Empty follows Helix: $XDG_CACHE_HOME/helix/bridge or ~/.cache/helix/bridge.", default: "" },
   } as const);
@@ -94,6 +95,7 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     service,
     hostCall: (method, input, hostId) => hostCall(method, input as Record<string, unknown>, { hostId, timeoutMs: 15_000 }),
+    bridgeDir: async () => (await settings.get()).bridgeDir,
   });
 
   const sends = new SendHandler({
@@ -261,15 +263,14 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await service.doctor(null, values.fontFamily.trim() || ghostty?.fontFamily || null);
       return { ready: !result.checks.some((c) => c.level === "error"), checks: result.checks.map(({ id: checkId, label, level, detail, fix }) => ({ id: checkId, label, level, detail, fix })) };
     },
-    ghostty: async () => {
+    ghostty: async (input) => {
       const values = await settings.get();
-      const config = await service.ghostty(null);
-      return {
-        ...config,
-        ...(values.fontFamily.trim() ? { fontFamily: values.fontFamily.trim() } : {}),
-        ...(values.fontSize > 0 ? { fontSize: values.fontSize } : {}),
-        hud: values.hud,
-      };
+      // The surface's font: Ghostty's, with this plugin's overrides (and, for
+      // the font check in spike/, a style asked for by the page).
+      const fontFamily = values.fontFamily.trim();
+      const fontStyle = input?.fontStyle?.trim() || values.fontStyle.trim();
+      const config = await service.ghostty(null, { ...(fontFamily ? { fontFamily } : {}), ...(fontStyle ? { fontStyle } : {}) });
+      return { ...config, ...(values.fontSize > 0 ? { fontSize: values.fontSize } : {}), hud: values.hud };
     },
     commentsChanged: ({ environmentId, path }) => {
       void annotator.refreshFile(environmentId, path);

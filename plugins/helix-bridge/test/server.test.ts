@@ -18,7 +18,12 @@ import { selectionBlock } from "../server/sends";
 import { TOOL_NAMES } from "../server/tools";
 import { commentItems, type ReviewComment } from "../server/annotations";
 import { editedPaths, revealOf } from "../server/watch";
-import { treeYaziToml } from "../host/yazi";
+import { OPENER_SCRIPT, treeYaziToml } from "../host/yazi";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+import { chmodSync, readFileSync } from "node:fs";
 import { treeClientId } from "../server/tree";
 // @ts-expect-error plain ESM test helper without types
 import { startMockBridge } from "./mock-bridge/mock.mjs";
@@ -489,13 +494,39 @@ describe("the file tree", () => {
   it("layers its two settings on the user's yazi.toml without overriding theirs", () => {
     const fresh = treeYaziToml(null);
     expect(fresh).toMatch(/\[manager\]\nratio = \[0, 1, 0\]/u);
-    expect(fresh).toMatch(/\[opener\]\nedit = \[\{ run = '"\$\{BB_CLI:-bb\}" hx tree-open "\$@"', desc = "Open in Helix", orphan = true, for = "unix" \}\]/u);
+    expect(fresh).toMatch(/\[opener\]\nedit = \[\{ run = '"\$HELIX_BRIDGE_OPEN" "\$@"', desc = "Open in Helix", orphan = true, for = "unix" \}\]/u);
     const theirs = treeYaziToml('[manager]\nshow_hidden = true\n\n[opener]\nedit = [{ run = "nvim $@", block = true }]\n');
     expect(theirs).toMatch(/\[manager\]\nratio = \[0, 1, 0\]\nshow_hidden = true/u);
     expect(theirs).toMatch(/edit = \[\{ run = "nvim \$@", block = true \}\]/u);
     expect(theirs).not.toMatch(/Open in Helix/u);
     expect(theirs.match(/^\[manager\]/gmu)).toHaveLength(1);
     expect(treeYaziToml("[manager]\nratio = [1, 4, 3]\n")).not.toMatch(/ratio = \[0, 1, 0\]/u);
+  });
+
+  it("opens the chosen file straight over Helix's socket, and falls back to bb hx tree-open", async () => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term" });
+    const script = join(dir, "helix-open");
+    writeFileSync(script, OPENER_SCRIPT);
+    chmodSync(script, 0o755);
+    execFileSync("sh", ["-n", script]);
+    const log = join(dir, "bb-calls.log");
+    const fakeBb = join(dir, "fake-bb");
+    writeFileSync(fakeBb, `#!/bin/sh\necho "$@" >> ${log}\n`);
+    chmodSync(fakeBb, 0o755);
+    const env = { ...process.env, HELIX_BRIDGE_DIR: dir, BB_CLI: fakeBb };
+    // The mock serves thr_term: the file opens without bb.
+    const started = Date.now();
+    // Async: the mock answers from this process, which must not block.
+    await run(script, [join(workspace, "util.go")], { env: { ...env, BB_THREAD_ID: "thr_term" } });
+    const elapsed = Date.now() - started;
+    expect((mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path).toBe(join(workspace, "util.go"));
+    expect(() => readFileSync(log, "utf8")).toThrow();
+    // nc waits a second for more before it exits; the open itself is immediate.
+    expect(elapsed).toBeLessThan(2500);
+    // No Helix for that thread: bb hx tree-open gets the files.
+    await run(script, [join(workspace, "main.go")], { env: { ...env, BB_THREAD_ID: "thr_other" } });
+    expect(readFileSync(log, "utf8").trim()).toBe(`hx tree-open ${join(workspace, "main.go")}`);
   });
 
   it("gives each thread its own stable yazi client id", () => {

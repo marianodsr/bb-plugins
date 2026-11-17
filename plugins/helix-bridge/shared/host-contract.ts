@@ -80,12 +80,26 @@ const checkSchema = z.object({
 });
 export type DoctorCheck = z.infer<typeof checkSchema>;
 
+export const fontFaceSchema = z.object({ fullName: z.string(), postscriptName: z.string().nullable() });
+export type FontFace = z.infer<typeof fontFaceSchema>;
+
 export const ghosttyConfigSchema = z.object({
   path: z.string(),
   found: z.boolean(),
   fontFamily: z.string().nullable(),
   fontSize: z.number().nullable(),
   fontStyle: z.string().nullable(),
+  fontStyleBold: z.string().nullable().optional(),
+  fontStyleItalic: z.string().nullable().optional(),
+  fontStyleBoldItalic: z.string().nullable().optional(),
+  /**
+   * The installed faces for the effective family and styles, by full and
+   * PostScript name (CSS `local()`), so the surface draws the faces Ghostty
+   * would: the base style as normal weight, the bold style as bold.
+   */
+  faces: z
+    .object({ regular: fontFaceSchema.nullable(), bold: fontFaceSchema.nullable(), italic: fontFaceSchema.nullable(), boldItalic: fontFaceSchema.nullable() })
+    .optional(),
   boldIsBright: z.boolean().nullable(),
   optionAsAlt: z.enum(["true", "false", "left", "right"]),
   theme: z.string().nullable(),
@@ -140,10 +154,30 @@ export const hostContract = defineRpcContract({
     input: z.object({ instanceId: z.string(), mode: z.enum(["normal", "quiet", "off"]) }).strict(),
     output: z.object({ found: z.boolean() }),
   },
+  gitRead: {
+    experimental_description: "Read-only git for reviews: resolve a revision, a commit's subject, the snapshot a turn starts from, files and diff against a base.",
+    input: z
+      .object({
+        cwd: z.string().min(1).max(4096),
+        op: z.enum(["revParse", "subject", "snapshot", "changedFiles", "diff"]),
+        rev: z.string().max(200).optional(),
+        exclude: z.array(z.string().max(4096)).max(20_000).optional(),
+      })
+      .strict(),
+    output: z.object({
+      sha: z.string().nullable().optional(),
+      subject: z.string().optional(),
+      base: z.string().nullable().optional(),
+      untracked: z.array(z.string()).optional(),
+      files: z.array(z.object({ path: z.string(), oldPath: z.string().optional(), status: z.enum(["added", "modified", "deleted", "renamed"]), additions: z.number(), deletions: z.number() })).optional(),
+      diff: z.string().optional(),
+      error: z.string().nullable(),
+    }),
+  },
   yaziPrepare: {
     experimental_description: "Find yazi and write the file tree's configuration directory (layered on the user's, which is never written).",
     input: z.object({}).strict(),
-    output: z.object({ yazi: z.string().nullable(), ya: z.string().nullable(), version: z.string().nullable(), configDir: z.string().nullable(), userConfig: z.string().nullable() }),
+    output: z.object({ yazi: z.string().nullable(), ya: z.string().nullable(), version: z.string().nullable(), configDir: z.string().nullable(), opener: z.string().nullable().optional(), userConfig: z.string().nullable() }),
   },
   yaziEmit: {
     experimental_description: "Send a command to a running file tree (ya emit-to).",
@@ -151,11 +185,12 @@ export const hostContract = defineRpcContract({
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
   },
   ghosttyConfig: {
-    experimental_description: "The user's Ghostty configuration, read only.",
+    experimental_description: "The user's Ghostty configuration, read only, with the installed faces for the effective font (the plugin's overrides applied).",
     experimental_retryable: true,
-    input: z.object({}).strict(),
+    input: z.object({ fontFamily: z.string().max(200).optional(), fontStyle: z.string().max(64).optional() }).strict(),
     output: ghosttyConfigSchema,
   },
+
 });
 
 export const hostSignals = {

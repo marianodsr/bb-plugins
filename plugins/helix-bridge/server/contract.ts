@@ -90,7 +90,7 @@ export const rpcContract = defineRpcContract({
   },
   ghostty: {
     experimental_description: "The editor surface's look: the user's Ghostty config with this plugin's overrides.",
-    input: z.null(),
+    input: z.object({ fontStyle: z.string().max(64).optional() }).strict().nullable(),
     output: ghosttyConfigSchema.extend({ hud: z.boolean() }),
   },
   commentsChanged: {

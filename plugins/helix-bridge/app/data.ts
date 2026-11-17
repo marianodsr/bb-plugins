@@ -74,8 +74,20 @@ export function useThreadHelix(threadId: string | null): Loaded<{ instance: AppI
   return { ...read, position };
 }
 
+/** The font check in spike/ asks for a style in its own browser only. */
+function debugFontStyle(): string | null {
+  try {
+    return window.localStorage.getItem("helix-bridge.debug.fontStyle");
+  } catch {
+    return null;
+  }
+}
+
 export function useGhostty(): Loaded<GhosttyConfig & { hud: boolean }> {
-  return useRead((rpc) => rpc.call("ghostty", null), [], []);
+  return useRead((rpc) => {
+    const fontStyle = debugFontStyle();
+    return rpc.call("ghostty", fontStyle ? { fontStyle } : null);
+  }, [], []);
 }
 
 export function useSetup(): Loaded<{ ready: boolean; checks: { id: string; label: string; level: "ok" | "warn" | "error"; detail: string; fix: string | null }[] }> {

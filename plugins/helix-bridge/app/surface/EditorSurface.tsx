@@ -11,7 +11,7 @@ import { EmptyState, Skeleton } from "../../kit";
 import { useGhostty, useHelixRpc, useSetup } from "../data";
 import { HudMeter, type HudSnapshot } from "../terminal/hud";
 import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
-import { createRenderer, type TerminalRenderer } from "../terminal/renderer";
+import { createRenderer, type RendererDiagnostics, type SurfaceFont, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
 import { TreePane, type TreeHandle } from "./TreePane";
 
@@ -77,7 +77,6 @@ export function lastLines(text: string, count = 12): string {
 }
 
 const WASM_URL = "/api/v1/plugins/helix-bridge/http/wterm-ghostty.wasm";
-const FALLBACK_FONTS = '"Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace';
 
 /** Visible surfaces by thread, so a draft's arrival can fly from the editor. */
 export const visibleSurfaces = new Map<string, HTMLElement>();
@@ -125,7 +124,7 @@ function Session({
   active: boolean;
   autoFocus: boolean;
   tree: boolean;
-  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; optionAsAlt: OptionAsAlt; hud: boolean; background: string | null; foreground: string | null };
+  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; faces?: SurfaceFont["faces"]; boldIsBright: boolean | null; optionAsAlt: OptionAsAlt; hud: boolean; background: string | null; foreground: string | null };
   className?: string;
 }) {
   const rpc = useHelixRpc();
@@ -139,6 +138,7 @@ function Session({
   onClosedRef.current = onClosed;
   const closeTreeRef = useRef<() => void>(() => {});
   const [hud, setHud] = useState<HudSnapshot | null>(null);
+  const [diagnostics, setDiagnostics] = useState<RendererDiagnostics | null>(null);
   const [restart, setRestart] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -246,11 +246,11 @@ function Session({
     const onFocusIn = () => claim();
     element.addEventListener("focusin", onFocusIn);
     let removeKeys: (() => void) | null = null;
+    let removeDiagnostics: (() => void) | null = null;
     void createRenderer(element, {
       wasmUrl: WASM_URL,
-      fontFamily: `${config.fontFamily ? `"${config.fontFamily}", ` : ""}${FALLBACK_FONTS}`,
-      fontSize: config.fontSize ?? 13,
-      fontWeight: /bold/iu.test(config.fontStyle ?? "") ? "bold" : "normal",
+      font: { family: config.fontFamily, size: config.fontSize ?? 13, style: config.fontStyle, faces: config.faces },
+      boldIsBright: config.boldIsBright === true,
       background: config.background,
       foreground: config.foreground,
       onInput: (data) => {
@@ -269,6 +269,8 @@ function Session({
         }
         renderer = created;
         editorFocus.current = () => created.focus();
+        setDiagnostics(created.diagnostics());
+        removeDiagnostics = created.onDiagnostics(() => !disposed && setDiagnostics(created.diagnostics()));
         // With the HUD on, drivers can also read the screen (status line included).
         if (meter) (window as unknown as { __helixScreen?: () => Promise<string> }).__helixScreen = () => created.term.readText();
         removeKeys = installKeyLayer(element, {
@@ -309,6 +311,12 @@ function Session({
           const snapshot = meter.snapshot();
           setHud({ ...snapshot, lastKey: snapshot.lastKey });
           element.dataset.renderer = renderer?.mode() ?? "";
+          // The renderer can change after creation (WebGL attaches its canvas,
+          // or falls back to DOM after a lost context): keep the HUD current.
+          if (renderer) {
+            const next = renderer.diagnostics();
+            setDiagnostics((current) => (current && JSON.stringify(current) === JSON.stringify(next) ? current : next));
+          }
         }, 500)
       : 0;
     return () => {
@@ -316,10 +324,11 @@ function Session({
       if (hudTimer) window.clearInterval(hudTimer);
       element.removeEventListener("focusin", onFocusIn);
       removeKeys?.();
+      removeDiagnostics?.();
       stream.close();
       renderer?.dispose();
     };
-  }, [terminalId, config.fontFamily, config.fontSize, config.fontStyle, config.hud, autoFocus, sdk]);
+  }, [terminalId, config.fontFamily, config.fontSize, config.fontStyle, config.faces, config.boldIsBright, config.hud, autoFocus, sdk]);
 
   useEffect(() => {
     const element = host.current;
@@ -438,12 +447,18 @@ function Session({
           />
         </div>
       ) : null}
-      {config.hud && hud ? <Hud snapshot={hud} renderer={host.current?.dataset.renderer ?? "?"} /> : null}
+      {diagnostics && (!diagnostics.familyInstalled || !diagnostics.requestedLoaded) ? (
+        <p className="shrink-0 border-t border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground" role="status" data-helix-font-notice>
+          {diagnostics.familyInstalled ? `${diagnostics.requested} did not load` : `${config.fontFamily} is not installed on this computer`}; the editor draws with {diagnostics.font || "a fallback font"}. Install it here (the computer running bb), or set the plugin's font setting.
+        </p>
+      ) : null}
+      {config.hud && hud ? <Hud snapshot={hud} diagnostics={diagnostics} /> : null}
     </div>
   );
 }
 
-function Hud({ snapshot, renderer }: { snapshot: HudSnapshot; renderer: string }) {
+function Hud({ snapshot, diagnostics }: { snapshot: HudSnapshot; diagnostics: RendererDiagnostics | null }) {
+  const renderer = diagnostics?.renderer ?? "?";
   const ms = (v: number | null) => (v === null ? "-" : `${v} ms`);
   return (
     <div
@@ -452,7 +467,13 @@ function Hud({ snapshot, renderer }: { snapshot: HudSnapshot; renderer: string }
       aria-live="off"
     >
       <span>Renderer</span>
-      <span className="text-foreground">{renderer || "?"}</span>
+      <span className="text-foreground">{renderer}</span>
+      <span>Font</span>
+      <span className="max-w-56 truncate text-foreground">
+        {diagnostics ? `${diagnostics.font} (${diagnostics.weight})${diagnostics.requestedLoaded ? "" : ", not the requested face"}` : "-"}
+      </span>
+      <span>Pixel ratio</span>
+      <span className="text-foreground">{diagnostics ? `${diagnostics.dpr}x, cell ${diagnostics.cell.width}x${diagnostics.cell.height} device px` : "-"}</span>
       <span>Key to paint</span>
       <span className="text-foreground">
         {ms(snapshot.keyToPaint.p50)} p50, {ms(snapshot.keyToPaint.p95)} p95 ({snapshot.keyToPaint.samples})
