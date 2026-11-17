@@ -585,8 +585,14 @@ function Session({
       if (sidebarRailVisible(threadId)) window.setTimeout(() => railFocus.get(threadId)?.(), 0);
       else railSheet.set(threadId);
     },
-    // Between Helix and the rail (or its sheet).
+    // Between Helix and the rail (or its sheet); from anywhere else (the
+    // chat, bb's chrome) straight to Helix.
     switchFocus: () => {
+      const inEditor = Boolean(surface.current?.contains(document.activeElement));
+      if (!tree && !inEditor && !railHasFocus.get(threadId)?.()) {
+        editorFocus.current?.();
+        return;
+      }
       if (showTree && !treeHandle.current?.focused()) treeHandle.current?.focus();
       else if (!tree && railHasFocus.get(threadId)?.()) {
         if (railSheet.get() === threadId) railSheet.set(null);

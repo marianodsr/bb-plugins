@@ -139,3 +139,49 @@ Follow and watch (Helix reloads by itself, the view moves, an unopened file
 opens at the edit), the inline diff, inline comment and reply annotations,
 the tree's open-and-close, and the no-git-per-turn rule all work and stay.
 The second pass changes how review is started, seen, written and sent.
+
+## After the second pass
+
+Driven again on `try/hxb` `140fc91af` (the fork's `commentRequest` and
+`:bb-emit`), same repository, same 1440 x 900 window. On a first visit the
+chat closes because Helix would get fewer than 80 columns with it open; ⌥⌘C
+brings it back. Counting rules as above; an Option-Cmd chord is one key.
+
+| Flow | Before (steps / keys) | After (steps / keys) | What it takes now |
+|---|---:|---:|---|
+| 1. Review what the agent just changed | 4 / 29 | 2 / 2 | ⌥⌘2 (Changes: the review starts itself, the list shows every changed file with its size and what is viewed, the flyout shows the first diff), `j` for the next. `u` (one more key) leaves only what changed since you looked. |
+| 2. Comment on three places and send | 13 / 69 | 13 / 52 with Helix's keys as they are; 10 / 19 with `C = ":bb-comment"` bound | per place: ⌥⌘] to the next changed file (or move), `x`, `:bb-comment` (or `C`), the comment in a multi-line box, Enter; then ⌥⌘↩. The comments are listed, editable and droppable before they go. |
+| 3. Re-review after the agent's fixes | 9+ / 20, two page changes | 8 / 8, no page change | ⌥⌘2, `u` (the files the agent touched come back unviewed by themselves), `j` per file, ⌥⌘3 (answered and resolved comments first), `a` per resolution. |
+| 4. Open a file from the tree | 4 / 6 | 4 / 6 | `space e` (or ⌥⌘1, ⇧⌘Y), move, Enter: unchanged, and the tree now has the sidebar's full height. |
+| 5. Get back to the chat | 1 click, no key | 1 / 1 | ⌥⌘C (opens the chat if closed and focuses its composer); ⇧⌘H goes back to Helix. |
+
+One ordinary review loop (flows 1, 2, 3 and back to the chat): **before 27
+steps and 118 keys with two page changes; after 24 steps and 63 keys, or 21
+steps and 30 keys with one Helix binding, and no page change.**
+
+What the keys do not show: Helix has 112 columns instead of 29 at this
+window size; the review is visible all the time (rail, bar, header count);
+comments are written in a real box and sent with the handoff; a resolved
+comment is acknowledged where it is shown.
+
+Measured (headless Chrome, software WebGL; a GPU makes drawing faster):
+
+| Interaction | Time |
+|---|---|
+| Back to the editor (warm) | Helix drawn 3-19 ms after the page mounts (was 110-200 ms) |
+| Fresh page load | first frame 430-550 ms after mount (bb's session lookup and stream replay) |
+| Comment box after `:bb-comment` Enter | 13-16 ms |
+| Rail tabs (⌥⌘1/2/3) | Changes 2-12 ms, Comments 6-9 ms, Files 3-9 ms after its first visit (first visit 260 ms: yazi starts) |
+| ⇧⌘H, ⌥⌘C | focus moves in about 1 ms |
+| Enter on a changed file | Helix has the keyboard in 7 ms; the file is drawn 230-500 ms later (server work 2-9 ms; the rest is drawing in software GL) |
+| Viewed mark (`v`) | the count changes in under 150 ms, before the server answers |
+| Scope switch with 3,003 changed files | 400 ms, the control answers at once |
+| Dragging a divider | 20 frames of drag, one resize sent to Helix |
+| Typing in Helix (HUD, 50-120 keys) | key to paint 9.7-13.5 ms p50, 15-19 ms p95 (audit baseline 10.6 / 16.2) |
+
+Not verified live: the context card's Changes row (implemented and
+typechecked; I could not open bb's context card environment rows in the
+headless page), a repository that is not git (the Changes tab shows bb's Git
+plugin's reason), a full disk, and a Helix crash on this build (the classifier
+refused killing the process; the crash report path is unchanged and was
+verified on the previous build).
