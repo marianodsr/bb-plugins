@@ -161,7 +161,7 @@ export class Reviews {
   }
 
   private async bbGitHunks(environmentId: string, target: Record<string, string>, root: string): Promise<LocationItem[]> {
-    const result = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "diff", input: { environmentId, target, maxDiffBytes: 4_000_000 }, outputSchema: diffSchema });
+    const result = await this.deps.sdk().plugins.callRpc({ pluginId: "bb--git", method: "diff", input: { environmentId, target, maxDiffBytes: 2_000_000 }, outputSchema: diffSchema });
     return result.outcome === "available" && result.diff ? diffHunks(result.diff.diff, root).map((h) => h.item) : [];
   }
 
