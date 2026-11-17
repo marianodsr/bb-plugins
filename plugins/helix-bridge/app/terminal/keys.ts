@@ -8,6 +8,8 @@
 //   Browsers report Option+x as "≈" or a dead key, so the base key comes from
 //   `KeyboardEvent.code` (US layout) and is sent as Alt: `ESC x`, or the Kitty
 //   sequence when Helix has turned the protocol on.
+// - Tab and Shift+Tab are sent here: wterm reads Escape then Tab as a request
+//   to leave the terminal, which would take a key from Helix.
 // - Everything else is wterm's, and handled keys never bubble to bb.
 
 export type OptionAsAlt = "true" | "false" | "left" | "right";
@@ -101,6 +103,16 @@ export function installKeyLayer(element: HTMLElement, options: KeyLayerOptions):
         }
       }
       return; // Cmd belongs to bb
+    }
+    // wterm treats Escape then Tab as "leave the terminal" (an accessibility
+    // exit). In Helix, Tab is a key like any other, so send it ourselves.
+    if (event.key === "Tab" && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const bytes = event.shiftKey ? (options.kittyFlags() > 0 ? "\x1b[9;2u" : "\x1b[Z") : "\t";
+      options.send(bytes);
+      options.observe?.(describe(event), bytes);
+      return;
     }
     if (event.altKey && optionApplies(options.optionAsAlt(), event.location)) {
       const bytes = encodeAltChord(event, options.kittyFlags());

@@ -1,0 +1,13 @@
+/* The editor surface blends with bb: no frame of its own. The terminal's
+   default colours are Ghostty's when its config sets them (set inline by the
+   renderer), else bb's own background and text. */
+.helix-surface.wterm {
+  padding: 0;
+  border-radius: 0;
+  --term-bg: var(--background);
+  --term-fg: var(--foreground);
+}
+.helix-surface.wterm:focus,
+.helix-surface.wterm:focus-visible {
+  outline: none;
+}

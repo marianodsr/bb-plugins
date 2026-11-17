@@ -1,0 +1,8 @@
+Helix Bridge (bb plugin)
+
+This plugin bundles and serves third-party software:
+
+- @wterm/dom and @wterm/ghostty 0.6.0 (https://github.com/vercel-labs/wterm),
+  Copyright Vercel, Inc., licensed under the Apache License, Version 2.0
+  (assets/LICENSE-wterm). assets/ghostty-vt.wasm is the Ghostty VT core built
+  by that project from Ghostty (https://github.com/ghostty-org/ghostty, MIT).

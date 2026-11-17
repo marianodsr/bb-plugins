@@ -93,3 +93,14 @@ while the editor has focus, except a small documented escape set.
 
 Not verified here: the bb desktop app's own menu accelerators (CDP events
 bypass them), a real keyboard and non-US layouts, real GPU numbers.
+
+## After the decision
+
+The coordinator chose `@wterm/ghostty` + `@wterm/dom` with WebGL. ghostty-web
+was removed from the plugin's dependencies; `spike/SpikePage.tsx` and
+`spike/renderer-candidates.ts` are kept for the record and need
+`npm install ghostty-web@0.4.0` and a navPanel registration to run again.
+`spike/surface.mjs` measures the shipped surface through its HUD (setting
+`hud`). Headless Chrome, 1440x900, stock hx 25.07 on the same Go file:
+key-to-paint 15.2 ms p50, 20.3 ms p95 (60 keys); 15.3 / 22.3 over 80 keys
+with 20 full redraws; paint work per frame 0.6 ms p50, 6.5 ms p95; WebGL.

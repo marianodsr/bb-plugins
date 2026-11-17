@@ -4,12 +4,13 @@ import { useState } from "react";
 import {
   experimental_ThreadContextCardRow as ThreadContextCardRow,
   experimental_useTabVisible as useTabVisible,
+  experimental_useThreadContextKind as useThreadContextKind,
   useBbNavigate,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
-import { EmptyState } from "../../kit";
+import { EmptyState, StatusDot } from "../../kit";
 import { useHelixRpc, useInstances, useThreadHelix, whereLabel } from "../data";
 import { EDITOR_PANEL } from "../pages/EditorPage";
 import { EditorSurface } from "../surface/EditorSurface";
@@ -131,4 +132,38 @@ export function BindDialog({ threadId, open, onOpenChange }: { threadId: string;
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * The banner counterpart of the card row, for panes that show the thread's
+ * context above the composer. The live file and line are on the composer's
+ * position chip right below it, so this stays a short status.
+ */
+export function HelixSegment({ threadId }: { threadId: string }) {
+  const { data, position } = useThreadHelix(threadId);
+  const navigate = useBbNavigate();
+  const instance = data?.instance ?? null;
+  if (!instance) return null;
+  const where = position ? whereLabel(position.path, position.line, position.endLine) : whereLabel(instance.focus?.path, instance.focus?.line, instance.focus?.endLine);
+  const connected = instance.status === "connected";
+  return (
+    <button
+      type="button"
+      onClick={() => navigate.toPluginPanel(EDITOR_PANEL, { subPath: threadId })}
+      title={`${connected ? `Helix is at ${where ?? "no file"}` : `Helix is ${instance.status}`}. Open the editor.`}
+      className="inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <StatusDot status={connected ? "running" : "failed"} />
+      <span className="text-foreground">Helix</span>
+      {instance.diagnostics.errors ? <span className="tabular-nums text-destructive">{instance.diagnostics.errors} errors</span> : null}
+      {instance.diagnostics.warnings ? <span className="tabular-nums">{instance.diagnostics.warnings} warnings</span> : null}
+      {instance.skippedModified.length ? <span className="text-warning-text">{instance.skippedModified.length} not reloaded</span> : null}
+    </button>
+  );
+}
+
+export function useHelixSegmentVisible({ threadId }: { threadId: string }): boolean {
+  const banner = useThreadContextKind() === "banner";
+  const { data } = useThreadHelix(banner ? threadId : null);
+  return banner && Boolean(data?.instance);
 }

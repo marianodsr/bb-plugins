@@ -79,7 +79,7 @@ try {
   for (const label of MATRIX) {
     const before = await effects();
     await dispatch(spec(label));
-    await sleep(250);
+    await sleep(650); // the HUD refreshes every 500 ms
     const after = await effects();
     const h = await hud();
     const bb = [after.path !== before.path && `navigated ${after.path}`, before.focusInEditor && !after.focusInEditor && "focus left the editor", after.dialogs > before.dialogs && "dialog or menu opened"].filter(Boolean).join(", ");

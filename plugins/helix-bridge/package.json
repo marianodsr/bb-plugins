@@ -21,8 +21,8 @@
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.5.0",
-    "@wterm/dom": "^0.6.0",
-    "@wterm/ghostty": "^0.6.0",
+    "@wterm/dom": "0.6.0",
+    "@wterm/ghostty": "0.6.0",
     "motion": "^14.14.0",
     "zod": "^4.6.5"
   },

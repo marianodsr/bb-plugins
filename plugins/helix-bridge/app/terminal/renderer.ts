@@ -3,6 +3,7 @@
 // which falls back to the DOM renderer without WebGL2 or after a lost
 // context. Kept thin so the renderer can be swapped (spike/RESULTS.md).
 import "@wterm/dom/css";
+import "./surface.css";
 import { WTerm } from "@wterm/dom";
 import { GhosttyCore } from "@wterm/ghostty";
 
@@ -11,6 +12,9 @@ export interface RendererOptions {
   fontFamily: string;
   fontSize: number;
   fontWeight: string;
+  /** Ghostty's `background` / `foreground`, when its config sets them. */
+  background: string | null;
+  foreground: string | null;
   onInput(data: string | Uint8Array): void;
   onResize(cols: number, rows: number): void;
   onClipboardWrite(text: string): void;
@@ -35,9 +39,13 @@ export async function createRenderer(element: HTMLElement, options: RendererOpti
   corePromise ??= Promise.resolve(GhosttyCore);
   const Core = await corePromise;
   const core = await Core.load({ wasmPath: options.wasmUrl, scrollbackLines: 5000 });
-  element.style.fontFamily = options.fontFamily;
-  element.style.fontSize = `${options.fontSize}px`;
+  element.style.setProperty("--term-font-family", options.fontFamily);
+  element.style.setProperty("--term-font-size", `${options.fontSize}px`);
+  element.style.setProperty("--term-row-height", `${Math.ceil(options.fontSize * 1.2)}px`);
   element.style.fontWeight = options.fontWeight;
+  const hex = (value: string | null) => (value && /^#?[0-9a-f]{6}$/iu.test(value) ? (value.startsWith("#") ? value : `#${value}`) : null);
+  if (hex(options.background)) element.style.setProperty("--term-bg", hex(options.background));
+  if (hex(options.foreground)) element.style.setProperty("--term-fg", hex(options.foreground));
   const term = new WTerm(element, {
     core,
     renderer: "webgl",

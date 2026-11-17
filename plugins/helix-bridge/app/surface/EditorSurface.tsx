@@ -44,7 +44,7 @@ function Session({
   threadId: string;
   active: boolean;
   autoFocus: boolean;
-  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; optionAsAlt: OptionAsAlt; hud: boolean };
+  config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; optionAsAlt: OptionAsAlt; hud: boolean; background: string | null; foreground: string | null };
   className?: string;
 }) {
   const rpc = useHelixRpc();
@@ -112,6 +112,8 @@ function Session({
       fontFamily: `${config.fontFamily ? `"${config.fontFamily}", ` : ""}${FALLBACK_FONTS}`,
       fontSize: config.fontSize ?? 13,
       fontWeight: /bold/iu.test(config.fontStyle ?? "") ? "bold" : "normal",
+      background: config.background,
+      foreground: config.foreground,
       onInput: (data) => {
         stream.input(data);
         if (meter && typeof data === "string") meter.sent(printable(data));

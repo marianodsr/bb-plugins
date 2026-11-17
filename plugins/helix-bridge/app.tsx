@@ -13,7 +13,7 @@ import { FromHelixReceipt, PositionChip } from "./app/composer/ComposerParts";
 import { HelixOverlay, commandRequest } from "./app/overlay/HelixOverlay";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
 import { visibleSurfaces } from "./app/surface/EditorSurface";
-import { HelixStatusRow, HelixTab } from "./app/thread/ThreadParts";
+import { HelixSegment, HelixStatusRow, HelixTab, useHelixSegmentVisible } from "./app/thread/ThreadParts";
 
 function focusEditor(): boolean {
   const surface = [...visibleSurfaces.values()].find((el) => el.isConnected);
@@ -55,6 +55,8 @@ export default definePluginApp((app) => {
   });
 
   app.slots.experimental_threadContextCardRow({ id: "helix", group: ROW_GROUPS.environment, order: 60, component: HelixStatusRow });
+
+  app.slots.experimental_threadContextSegment({ id: "helix", title: "Helix", group: "2_helix", summary: HelixSegment, useVisible: useHelixSegmentVisible });
 
   app.slots.experimental_threadAction({
     id: "open-editor",
