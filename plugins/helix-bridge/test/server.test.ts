@@ -65,7 +65,7 @@ let capabilities: string[] | null = null;
 let gitReads = 0;
 /** Settings for the next setup() (the agent tools are off by default). */
 let extraSettings: Record<string, string | number | boolean> = {};
-const ALL_TOOLS_ON = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true, toolEdit: true, toolPanes: true, toolCommand: true };
+const ALL_TOOLS_ON = { agentTools: "show, tour, selection, query, diagnostics, edit, panes, command, review" };
 
 async function setupWithCapabilities(caps: string[]) {
   capabilities = caps;
@@ -169,7 +169,7 @@ describe("instances and bindings", () => {
 
   it("offers the switched-on tools only to a thread a connected Helix serves", async () => {
     await teardown();
-    extraSettings = { toolShow: true, toolTour: true, toolSelection: true, toolQuery: true, toolDiagnostics: true };
+    extraSettings = { agentTools: "show,tour,selection,query,diagnostics" };
     try {
       await setup();
     } finally {

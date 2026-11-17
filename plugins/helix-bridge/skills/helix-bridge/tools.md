@@ -1,8 +1,7 @@
 # Helix Bridge: agent tools and the full CLI (optional)
 
 Only for threads where the user turned on Helix tools in the plugin's
-settings (`toolShow`, `toolTour`, `toolSelection`, `toolQuery`,
-`toolDiagnostics`, `toolPanes`, `toolCommand`, `toolEdit`; all off by
+setting `agentTools` (a comma-separated list of tool names; empty by
 default). Without them, use `bb hx open` and `bb hx tour` (SKILL.md).
 
 The user edits in Helix (a fork run as `hxb`) connected to bb. Each Helix
@@ -46,7 +45,7 @@ run `:bb-go`. Pass `now: true` only when they asked to be moved right away.
 - Edit files with your normal file tools. Helix reloads what you change and
   shows it to the user as it lands; there is nothing to do in the editor.
   (`helix_edit`, editing inside the user's buffers, exists only if the user
-  turned on the `toolEdit` setting.)
+  listed `edit` in the `agentTools` setting.)
 - `helix_command` (when offered): anything else, as exactly one of `typed` (a command line
   without the colon), `static` (a command name from Helix's key maps) or
   `keys` (Helix key notation). Helix's command policy (`safe` by default: no
@@ -64,7 +63,7 @@ Which tools you get depends on what the connected Helix can do and on the
 user's settings: `helix_selection` and `helix_show` need only the basics;
 `helix_tour`, `helix_diagnostics` and `helix_query` appear when Helix offers
 them; `helix_panes`, `helix_command` and `helix_edit` are off unless the
-user turns them on (settings `toolPanes`, `toolCommand`, `toolEdit`). Tools are attached when your session starts with a connected Helix
+user lists them in the `agentTools` setting (`panes`, `command`, `edit`). Tools are attached when your session starts with a connected Helix
 serving the thread; a thread that started earlier gets them in its next
 session. Until then, use the CLI. A tool that answers "this Helix does not
 offer ... yet" is telling you a fact: say so instead of retrying.
@@ -105,7 +104,7 @@ otherwise the one serving the calling thread, or the only one.
 | `bb hx doctor` | what is missing on this machine and the command to fix it |
 
 Settings (`bb plugin config helix-bridge set <key> <value>`): `hxbPath`
-(default `hxb` on PATH), `autoReload`, `followAgent`, `positionInMessages`
+(default `hxb` on PATH), `followAgent`, `positionInMessages`
 (default off: only messages the user attaches it to carry the position),
 `hud`, `fontFamily`, `fontSize`, `bridgeDir` (empty follows Helix's cache
 directory).

@@ -45,17 +45,8 @@ function pluginRoot(): string {
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     hxbPath: { type: "string", label: "Editor binary", description: "The Helix fork to run, a name on PATH or an absolute path.", default: "hxb" },
-    autoReload: { type: "boolean", label: "Reload buffers when files change", description: "Reload Helix's unchanged buffers when bb sees files change. Buffers with unsaved changes are never touched.", default: true },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
-    toolShow: { type: "boolean", label: "Agent tool: helix_show", description: "Offer agents a tool to take you to a file and line. Off: they use bb hx open, taught by the skill, which costs no context until used.", default: false },
-    toolTour: { type: "boolean", label: "Agent tool: helix_tour", description: "Offer agents a tool for tours. Off: they use bb hx tour.", default: false },
-    toolSelection: { type: "boolean", label: "Agent tool: helix_selection", description: "Offer agents a tool to read what you have selected in Helix. Off: send it with :bb-send.", default: false },
-    toolQuery: { type: "boolean", label: "Agent tool: helix_query", description: "Offer agents the language server Helix runs. Off: they use their own (gopls, etc.).", default: false },
-    toolDiagnostics: { type: "boolean", label: "Agent tool: helix_diagnostics", description: "Offer agents the diagnostics Helix holds. Off: they run their own checks.", default: false },
-    toolReview: { type: "boolean", label: "Agent tool: helix_review", description: "Offer agents a tool to start a review in Helix. Off: they use bb hx review.", default: false },
-    toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
-    toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
-    toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
+    agentTools: { type: "string", label: "Agent tools", description: "Helix tools to offer agents, by name, separated by commas: show, tour, selection, query, diagnostics, review, edit, panes, command. Empty (the default) offers none: agents use bb hx, taught by the skill, which costs no context until used.", default: "" },
     treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
@@ -150,7 +141,8 @@ export default async function plugin(bb: BbPluginApi) {
   const watcher = new AgentWatcher({
     sdk: () => bb.sdk,
     service,
-    settings: () => settings.get(),
+    // A Helix with `watch` reloads by itself; an older one is always asked to.
+    settings: async () => ({ ...(await settings.get()), autoReload: true }),
     log: (message) => bb.log.warn(message),
     timing: (edit, ms, instance) => bb.log.info(`agent edit in ${edit.paths.length} file(s) reached ${instance.key} ${ms} ms after bb recorded it`),
     edited: (edit) => follower.noteEdit(edit),
@@ -249,7 +241,7 @@ export default async function plugin(bb: BbPluginApi) {
   const follower = new Follower({
     sdk: () => bb.sdk,
     service,
-    settings: () => settings.get(),
+    settings: async () => ({ ...(await settings.get()), autoReload: true }),
     watching: (environmentId) => watcher.watching(environmentId),
     log: (message) => bb.log.warn(message),
     skipped: (instance, paths) => {
@@ -689,20 +681,15 @@ export default async function plugin(bb: BbPluginApi) {
   // before Helix connected gets them on its next session.
   // No agent tool is offered unless its setting is on: agents get the skill
   // (one listing line) and use bb hx. configure is synchronous: kept current.
-  type Switches = Record<"toolShow" | "toolTour" | "toolSelection" | "toolQuery" | "toolDiagnostics" | "toolReview" | "toolEdit" | "toolPanes" | "toolCommand", boolean>;
   let switches: Record<string, boolean> = {};
-  const readSwitches = (v: Switches) =>
-    (switches = {
-      helix_show: v.toolShow,
-      helix_tour: v.toolTour,
-      helix_selection: v.toolSelection,
-      helix_query: v.toolQuery,
-      helix_diagnostics: v.toolDiagnostics,
-      helix_edit: v.toolEdit,
-      helix_panes: v.toolPanes,
-      helix_command: v.toolCommand,
-      helix_review: v.toolReview,
-    });
+  const readSwitches = (v: { agentTools: string }) =>
+    (switches = Object.fromEntries(
+      v.agentTools
+        .split(/[\s,]+/u)
+        .map((name) => name.trim().toLowerCase().replace(/^helix_/u, ""))
+        .filter(Boolean)
+        .map((name) => [`helix_${name}`, true]),
+    ));
   void settings.get().then(readSwitches, () => {});
   settings.onChange((next) => readSwitches(next));
   bb.agents.configure((context) => {

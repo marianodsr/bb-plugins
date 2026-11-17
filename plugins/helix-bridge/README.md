@@ -35,10 +35,10 @@ bb hx tour --title "Request flow" "cmd/server/main.go:31 entry" "internal/auth/s
 ```
 
 Both act on the Helix of the thread they run in, and say so when there is
-none. The tools still exist for those who want them: settings `toolShow`,
-`toolTour`, `toolSelection`, `toolQuery`, `toolDiagnostics`, `toolPanes`,
-`toolCommand`, `toolEdit` (all off; `skills/helix-bridge/tools.md` covers
-them).
+none. The tools still exist for those who want them: the setting
+`agentTools` names them (`show, tour, selection, query, diagnostics, review,
+edit, panes, command`; empty by default; `skills/helix-bridge/tools.md`
+covers them).
 
 ## The editor page
 

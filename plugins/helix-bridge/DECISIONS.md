@@ -459,3 +459,26 @@ conservatively. Newest last.
     pageActions.ts): the palette commands, the keys and Helix's bindings all
     call it, so an action has one name everywhere. `rail.notes` is accepted
     as `rail.comments` (the design's first name).
+
+## Second pass: around the page and the settings
+
+81. **The header button says what waits**: "9 to view" (with the Helix icon)
+    while the thread's review has files not viewed, else "Helix"; it opens
+    the page on Changes. Thread actions have no badge, and a bare number
+    after "Helix" reads like a version. The context card gets one row,
+    "Changes: 12 files, 9 to view, 3 comments need you". Both read
+    `reviewSummaries`: the review the server holds, bb's viewed marks and
+    the comment counts; no git. A thread with no active review shows
+    neither (bb's own changed-files segment already says what changed).
+82. **⌥⌘E opens the editor for the thread** (the audit asked for a key; ⌥⌘H
+    is macOS's "Hide others").
+83. **Settings, 21 to 10.** `autoReload` is gone (a Helix with `watch`
+    reloads by itself; an older one is always asked to). The nine agent-tool
+    switches are one list, `agentTools` (empty: no agent surface, as the
+    owner wants). `reviewTurnSnapshots` went with the `turn` review. What
+    remains: `hxbPath`, `followAgent`, `agentTools`, `treeStaysOpen`,
+    `positionInMessages`, `hud`, `fontFamily`, `fontStyle`, `fontSize`,
+    `bridgeDir`. Values saved for the removed settings are ignored.
+84. **Not built: the sidebar mark** for threads with unviewed changes (the
+    design's optional setting). The header count and the context card row
+    cover the same need without adding a setting.
