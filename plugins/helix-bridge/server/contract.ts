@@ -11,6 +11,7 @@ const instanceKey = z.string().regex(/^[A-Za-z0-9_-]{1,64}:[A-Za-z0-9_-]{1,64}$/
 
 export const tags = {
   instances: "instances",
+  comments: (threadId: string) => `comments:${threadId}`,
   drafts: (threadId: string) => `drafts:${threadId}`,
   setup: "setup",
   review: (threadId: string) => `review:${threadId}`,
@@ -50,6 +51,23 @@ export const changedFileSchema = z.object({
   viewed: z.boolean(),
 });
 export type ChangedFile = z.infer<typeof changedFileSchema>;
+
+export const railCommentSchema = z.object({
+  id: z.string(),
+  /** Relative to the workspace when it is in it. */
+  path: z.string(),
+  startLine: z.number(),
+  endLine: z.number(),
+  snippet: z.string(),
+  body: z.string(),
+  severity: z.string(),
+  /** unsent, sent, answered (the agent replied), resolved (by the agent, waiting for you), done, outdated. */
+  state: z.enum(["unsent", "sent", "answered", "resolved", "done", "outdated"]),
+  replies: z.array(z.object({ author: z.enum(["user", "agent"]), body: z.string(), at: z.number() })),
+  local: z.boolean(),
+  updatedAt: z.number(),
+});
+export type RailComment = z.infer<typeof railCommentSchema>;
 
 export const positionSchema = z.object({ key: z.string(), threadId: z.string().nullable(), path: z.string().nullable(), absolutePath: z.string().nullable(), line: z.number().nullable(), col: z.number().nullable(), endLine: z.number().nullable(), mode: z.string().nullable() });
 export type Position = z.infer<typeof positionSchema>;
@@ -100,6 +118,7 @@ export const rpcContract = defineRpcContract({
         .nullable(),
       error: z.string().nullable(),
       hasPullRequest: z.boolean(),
+      pullRequest: z.object({ number: z.number(), url: z.string().nullable() }).nullable(),
     }),
     tags: ({ threadId }) => [tags.review(threadId), tags.instances],
   },
@@ -127,6 +146,47 @@ export const rpcContract = defineRpcContract({
     experimental_description: "The last commits on the thread's branch, for the rail's Commit scope (read when that scope opens).",
     input: z.object({ threadId: id }).strict(),
     output: z.object({ commits: z.array(z.object({ sha: z.string(), subject: z.string(), when: z.string() })) }),
+  },
+  comments: {
+    experimental_description: "The thread's review comments for the rail's Comments tab: kept in Review Editor (or here when it is not running), with the agent's replies and what waits for the owner.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({
+      source: z.enum(["review-editor", "local"]),
+      comments: z.array(railCommentSchema),
+      unsent: z.number(),
+      needsYou: z.number(),
+    }),
+    tags: ({ threadId }) => [tags.comments(threadId)],
+  },
+  createComment: {
+    experimental_description: "Comment on lines from the editor's comment box; sendNow also sends every comment not sent yet.",
+    input: z
+      .object({
+        threadId: id,
+        path: z.string().min(1).max(4096),
+        startLine: z.number().int().min(1),
+        endLine: z.number().int().min(1),
+        snippet: z.string().max(200_000),
+        languageId: z.string().max(64),
+        modified: z.boolean(),
+        body: z.string().trim().min(1).max(20_000),
+        severity: z.enum(["note", "suggestion", "issue", "blocker"]).optional(),
+        sendNow: z.boolean().optional(),
+      })
+      .strict(),
+    output: z.object({ id: z.string(), kept: z.enum(["review-editor", "local"]), message: z.string() }),
+  },
+  commentAction: {
+    experimental_description: "Change one of the thread's comments: edit, drop, reply, reopen, resolve, or acknowledge the agent's resolution.",
+    input: z
+      .object({ threadId: id, commentId: z.string().min(1).max(64), action: z.enum(["edit", "delete", "reply", "reopen", "resolve", "acknowledge"]), body: z.string().trim().min(1).max(20_000).optional() })
+      .strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  notifyHelix: {
+    experimental_description: "Show one line on the status line of the thread's Helix (an action the page could not do).",
+    input: z.object({ threadId: id, message: z.string().min(1).max(300) }).strict(),
+    output: z.object({ ok: z.boolean() }),
   },
   startReview: {
     experimental_description: "Start a review in the thread's Helix: auto (the branch when it has its own commits, else uncommitted), uncommitted, branch, pr, commit <sha>, or off to end it.",

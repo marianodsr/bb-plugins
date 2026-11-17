@@ -23,6 +23,7 @@ export type ChangesData = {
   } | null;
   error: string | null;
   hasPullRequest: boolean;
+  pullRequest: { number: number; url: string | null } | null;
 };
 
 interface Entry {

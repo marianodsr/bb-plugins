@@ -366,7 +366,7 @@ describe("reviews in the editor", () => {
     mock.control({ cmd: "review", target: "branch" });
     await until(() => review()?.base === base);
     sent = [];
-    expect(await fake.harness.behavior.callRpc("sendReviewComments", { threadId: "thr_term" })).toMatchObject({ message: expect.stringMatching(/Sent the comments/u) });
+    expect(await fake.harness.behavior.callRpc("sendReviewComments", { threadId: "thr_term" })).toMatchObject({ message: expect.stringMatching(/^Sent to /u) });
     expect(sent[0]?.text).toBe("Review of feature against main.\n\nCOMPILED PROMPT");
   });
 });
@@ -540,15 +540,15 @@ describe("sends from Helix", () => {
   it("keeps :bb-comment until :bb-comments-send sends them together", async () => {
     mock.control({ cmd: "select", line: 6, col: 1, endLine: 9, endCol: 1 });
     mock.control({ cmd: "send", kind: "comment", note: "rename to Welcomer" });
-    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 1 pending (:bb-comments-send)");
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 1 not sent yet");
     mock.control({ cmd: "select", line: 15, col: 1, endLine: 15, endCol: 10 });
     mock.control({ cmd: "send", kind: "comment", note: "use a constant" });
-    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 2 pending (:bb-comments-send)");
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 2 not sent yet");
     expect(sent).toEqual([]);
     mock.control({ cmd: "send", kind: "flush" });
     await until(() => sent.length === 1);
     expect(sent[0]!.text).toMatch(/^Review comments from Helix \(2\)[\s\S]*1\. `main.go:6-8`[\s\S]*rename to Welcomer[\s\S]*2\. `main.go:15`[\s\S]*use a constant/u);
-    await until(() => mock.control({ cmd: "state" }).status?.message === "Sent 2 comments to Thread thr_term");
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Sent to Thread thr_term");
   });
 });
 
@@ -845,6 +845,35 @@ describe("the file tree", () => {
       // Nobody subscribed: Helix runs its own file manager, full screen.
       expect(mock.control({ cmd: "files" })).toMatchObject({ emitted: false, ranFileManager: true });
     }
+  });
+
+  it("opens the page's comment box and runs :bb-emit actions only for a Helix the page draws", async () => {
+    await teardown();
+    await setup({ BB_THREAD_ID: "thr_term", BB_TERMINAL_SESSION_ID: "term_helix1" });
+    await until(() => (mock.control({ cmd: "state" }).subscriptions as string[][]).some((s) => s.includes("commentPrompt") && s.includes("action")));
+    mock.control({ cmd: "select", path: "main.go", line: 2, col: 1, endLine: 3, endCol: 1 });
+    expect(mock.control({ cmd: "comment" })).toMatchObject({ emitted: true });
+    const box = await until(() => fake.harness.inspection.realtimeSignals.find((s) => s.channel === "commentRequest"));
+    expect(box.payload).toMatchObject({ threadId: "thr_term", request: { path: join(workspace, "main.go"), ranges: [{ start: { line: 2 } }], screen: { rows: 40, cols: 120 } } });
+    expect(mock.control({ cmd: "emit", name: "review.next-file" })).toMatchObject({ emitted: true });
+    const action = await until(() => fake.harness.inspection.realtimeSignals.find((s) => s.channel === "action"));
+    expect(action.payload).toMatchObject({ threadId: "thr_term", name: "review.next-file", args: [] });
+    // The box keeps the comment (here: Review Editor is not running) and the Comments tab lists it.
+    const created = (await fake.harness.behavior.callRpc("createComment", { threadId: "thr_term", path: "main.go", startLine: 2, endLine: 3, snippet: "a\nb", languageId: "go", modified: false, body: "Why two lines?" })) as { kept: string };
+    expect(created.kept).toBe("local");
+    const list = (await fake.harness.behavior.callRpc("comments", { threadId: "thr_term" })) as { comments: { body: string; state: string; path: string }[]; unsent: number };
+    expect(list.unsent).toBe(1);
+    expect(list.comments[0]).toMatchObject({ body: "Why two lines?", state: "unsent", path: "main.go" });
+  });
+
+  it("leaves the comment prompt and actions to Helix in the user's own terminal", async () => {
+    await teardown();
+    await setup({ BB_TERMINAL_SESSION_ID: "term_users1" });
+    await until(() => (mock.control({ cmd: "state" }).subscriptions as string[][]).some((s) => s.includes("send")));
+    await wait(100);
+    const subs = (mock.control({ cmd: "state" }).subscriptions as string[][]).flat();
+    expect(subs.includes("commentPrompt") || subs.includes("action")).toBe(false);
+    expect(mock.control({ cmd: "comment" })).toMatchObject({ emitted: false, prompt: true });
   });
 
   it("gives each thread its own stable yazi client id", () => {

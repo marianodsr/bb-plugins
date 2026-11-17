@@ -103,6 +103,10 @@ export interface ReviewDeps {
   changed(threadId: string | null): void;
   /** Every git read a review makes, for the plugin log (bb plugin logs helix-bridge). */
   trace?(message: string): void;
+  /** Remember (or forget, with null) the review active in a Helix, across plugin reloads. */
+  persist?(instance: BoundInstance, review: { id: string; target: string } | null): void;
+  /** The review remembered for a Helix. */
+  recall?(instance: BoundInstance): { id: string; target: string } | null;
   log(message: string): void;
 }
 
@@ -267,6 +271,7 @@ export class Reviews {
     };
     this.active.set(instance.key, review);
     this.firstChanges.set(instance.key, firstChangesOf(resolved));
+    this.deps.persist?.(instance, { id, target: targetText.trim() || "uncommitted" });
     this.deps.changed(review.threadId);
     if (resolved.files.length === 0) return `${resolved.title}: no changes yet (the review follows new ones)`;
     return `Reviewing ${resolved.title}: ${resolved.files.length} file${resolved.files.length === 1 ? "" : "s"}, +${review.additions} -${review.deletions}`;
@@ -276,10 +281,49 @@ export class Reviews {
     const review = this.active.get(instance.key);
     this.active.delete(instance.key);
     this.firstChanges.delete(instance.key);
+    this.deps.persist?.(instance, null);
     await this.deps.service.bridge.call(instance.key, "review/clear", {});
     await this.deps.service.bridge.call(instance.key, "locations/clear", { list: "review" }).catch(() => null);
     this.deps.changed(review?.threadId ?? instance.threadId);
     return review ? `Review ended: ${review.title}` : "No review was active";
+  }
+
+  /**
+   * After a plugin reload: the review this Helix still shows, if it is the
+   * one remembered for it, becomes active again (resolved once, without
+   * moving the user or touching the inline diff). Anything else is forgotten.
+   */
+  async adopt(instance: BoundInstance): Promise<boolean> {
+    if (this.active.has(instance.key) || !instance.summary.capabilities.includes("review")) return false;
+    const saved = this.deps.recall?.(instance);
+    if (!saved) return false;
+    const state = await this.deps.service.bridge.call<{ active?: boolean; id?: string | null }>(instance.key, "review/state", {}).catch(() => null);
+    const target = parseTarget(saved.target);
+    if (!state?.active || state.id !== saved.id || "error" in target || target.kind === "off") {
+      this.deps.persist?.(instance, null);
+      return false;
+    }
+    const resolved = await this.resolve(instance, target).catch(() => null);
+    if (!resolved || this.active.has(instance.key)) return false;
+    await this.send(instance, saved.id, resolved, { activate: false });
+    this.active.set(instance.key, {
+      id: saved.id,
+      instanceKey: instance.key,
+      threadId: instance.threadId,
+      environmentId: instance.environmentId!,
+      target,
+      title: resolved.title,
+      base: resolved.base,
+      files: resolved.files.length,
+      additions: resolved.files.reduce((n, f) => n + f.additions, 0),
+      deletions: resolved.files.reduce((n, f) => n + f.deletions, 0),
+      digest: digestOf(resolved),
+      startedAt: Date.now(),
+      resolved,
+    });
+    this.firstChanges.set(instance.key, firstChangesOf(resolved));
+    this.deps.changed(instance.threadId);
+    return true;
   }
 
   /** Turn the active review's inline diff on or off (the same id: nothing else moves). */

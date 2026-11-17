@@ -1,7 +1,7 @@
 // The flyout beside the rail: the selected file's diff, drawn by bb's own diff
 // viewer, so a review can be skimmed with j and k without leaving the list.
-// It lies over the left part of Helix (at 1440 px with the chat open there is
-// no room beside it) and leaves when focus leaves the list. A file's patch is
+// While it is open it is the editor area (skimming is a mode: you read diffs,
+// not the editor) and it leaves when focus leaves the list. A file's patch is
 // fetched once the cursor rests on it, then kept until the file changes.
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -15,8 +15,6 @@ import { patchFor } from "./changesStore";
 
 /** Wait this long on a row before fetching its diff, so holding j costs nothing. */
 const SETTLE_MS = 140;
-/** A page at least this wide keeps part of Helix visible beside the flyout. */
-const WIDE = 1200;
 /** Less room than this beside the rail and the flyout covers the page instead. */
 const MIN_ROOM = 360;
 
@@ -91,17 +89,16 @@ export function DiffFlyout({ threadId, file, anchor, onOpen }: { threadId: strin
       const surface = document.querySelector<HTMLElement>("[data-helix-surface]")?.getBoundingClientRect();
       const rail = anchor.current?.getBoundingClientRect();
       if (!surface) return setPlace(null);
-      // Right of the rail: bb's sidebar ends where the page starts; the sheet lies over the page.
+      // Skimming is a mode: the flyout takes the whole editor area, right of
+      // the rail (bb's sidebar ends where the page starts; the sheet lies over
+      // the page). Beside a sheet on a compact window it covers the sheet too.
       let left = rail && rail.right > surface.left ? Math.round(rail.right) : surface.left;
-      let room = surface.right - left;
-      // Too narrow beside the rail (the sheet on a compact window): a peek over all of it.
       let top = surface.top;
-      if (room < MIN_ROOM) {
+      if (surface.right - left < MIN_ROOM) {
         left = surface.left;
-        room = surface.width;
         if (rail) top = Math.min(top, Math.round(rail.top));
       }
-      const width = surface.width >= WIDE ? Math.min(760, Math.round(room * 0.6)) : Math.min(room, 760);
+      const width = surface.right - left;
       setPlace({ left, top, bottom: Math.max(0, window.innerHeight - surface.bottom), width });
     };
     measure();
@@ -116,7 +113,7 @@ export function DiffFlyout({ threadId, file, anchor, onOpen }: { threadId: strin
   return createPortal(
     <aside
       {...portal}
-      className="fixed z-40 flex flex-col overflow-hidden border-r border-border/60 bg-background shadow-lg motion-safe:animate-[helix-flyout-in_200ms_cubic-bezier(0.22,1,0.36,1)]"
+      className="fixed z-40 flex flex-col overflow-hidden bg-background motion-safe:animate-[helix-flyout-in_200ms_cubic-bezier(0.22,1,0.36,1)]"
       style={{ left: place.left, top: place.top, bottom: place.bottom, width: place.width }}
       aria-label={`Diff of ${shown.path}`}
       // Clicks here keep the list's focus (and the flyout); wheel scrolling needs none.

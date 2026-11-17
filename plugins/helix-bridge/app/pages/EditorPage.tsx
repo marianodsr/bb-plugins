@@ -15,6 +15,7 @@ import { Rail } from "../rail/Rail";
 import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, sidebarRailVisible, useRailSheet } from "../rail/railStore";
 import { EditorSurface } from "../surface/EditorSurface";
 import { ReviewBar } from "../review/ReviewBar";
+import { usePageActions } from "./pageActions";
 
 export const EDITOR_PANEL = "editor";
 
@@ -29,6 +30,7 @@ export function EditorPage({ subPath }: { subPath: string }) {
   const threadId = threadFromSubPath(subPath);
   const navigate = useBbNavigate();
   useEditorWidth(threadId);
+  usePageActions(threadId);
   if (!threadId) return <PickThread />;
   // Helix closed: back to the thread, with its composer focused.
   const onClosed = () => {

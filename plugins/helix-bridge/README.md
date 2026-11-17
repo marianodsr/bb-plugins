@@ -59,10 +59,44 @@ then three tabs:
   marks it viewed and moves on, `u` shows only what is left, `?` lists the
   keys. bb's Git plugin lists at most 500 files; the list says when it is
   cut short.
-- **Comments**: your comments and the agent's replies.
+- **Comments**: every comment of the thread's review, grouped by file, with
+  the quoted lines, its state (not sent, sent, answered, resolved by the agent)
+  and the agent's replies. Enter shows the lines in Helix; `e` edits, `d d`
+  drops, `r` replies, `a` acknowledges the agent's resolution, `o` reopens.
+  The tab's count is what needs you (else what waits to be sent).
 
-A quiet bar above Helix names the review, how much is viewed, its size, the
-inline diff switch and End review. ⇧⌘H moves between Helix and the rail.
+**Writing a comment.** Select lines in Helix and run `:bb-comment` (bind it,
+for example `C = ":bb-comment"` under `[keys.select]`): inside bb a box opens
+beside the selection with the quoted lines, a multi-line field with voice
+input and the severity. Enter keeps it, ⌘Enter keeps it and sends, Escape
+cancels; Helix gets the keyboard back in the mode it was in. Outside bb,
+Helix's own one-line prompt opens as before.
+
+**Send to thread** (the bar, the Comments tab, ⌥⌘↩) hands every comment not
+sent yet to the thread, naming the review; they gather and fly to the chat's
+composer (to the thread at the top of the rail when the chat is closed).
+
+A quiet bar above Helix carries what the rail does not show: the review and
+how much of it is viewed (when the Changes tab is not on screen), the pull
+request, the inline diff switch, Send to thread and End review.
+
+### Keys
+
+| Key | Does |
+|---|---|
+| ⇧⌘H | Between Helix and the rail |
+| ⇧⌘Y | The files (the tree) |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | The rail's Files, Changes, Comments |
+| ⌥⌘] / ⌥⌘[ | Next / previous changed file, in Helix at its first change |
+| ⌥⌘V | Mark Helix's file viewed and go to the next one not viewed |
+| ⌥⌘↩ | Send to thread |
+| ⌥⌘C | The chat (opens the panel, focuses its composer) |
+| `?` in the rail | Every key of the tab |
+
+For Helix's own keys, `:bb-emit <action>` runs the same things; bind it like
+any command (`"C-n" = ":bb-emit review.next-file"`). Actions:
+`review.next-file`, `review.prev-file`, `review.viewed`, `review.send`,
+`rail.files`, `rail.changes`, `rail.comments`, `rail.toggle`, `chat.focus`.
 When bb's sidebar is collapsed, or on a compact window, the rail opens as a
 sheet over the editor.
 

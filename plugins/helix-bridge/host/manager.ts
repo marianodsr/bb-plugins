@@ -93,7 +93,9 @@ export type PerfMode = "normal" | "quiet" | "off";
 function optionalKinds(instance: Instance): string[] {
   const env = instance.registry.env ?? {};
   const kinds: string[] = [];
-  if (env.BB_THREAD_ID && env.BB_TERMINAL_SESSION_ID) kinds.push("files");
+  // Only for a Helix whose surface bb draws: elsewhere Helix's own tree,
+  // comment prompt and key bindings stay as they are.
+  if (env.BB_THREAD_ID && env.BB_TERMINAL_SESSION_ID) kinds.push("files", "commentPrompt", "action");
   if (instance.summary.capabilities.includes("review")) kinds.push("review");
   return kinds;
 }
@@ -432,10 +434,14 @@ export class InstanceManager {
       // :bb-files and :bb-review: user actions, handled by the server like sends.
       case "event/files":
       case "event/review":
+      // :bb-comment with no text (the comment box) and :bb-emit (an action).
+      case "event/commentRequest":
+      case "event/action":
       // A reload Helix made (by itself under `watch`): the server follows it.
       case "event/reloaded": {
         this.sendSeq += 1;
-        this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { ...params, kind: method === "event/files" ? "files" : method === "event/review" ? "review" : "reloaded" } });
+        const kind = method === "event/files" ? "files" : method === "event/review" ? "review" : method === "event/commentRequest" ? "commentRequest" : method === "event/action" ? "action" : "reloaded";
+        this.sends.push({ id: `${instance.id}:${Date.now()}:${this.sendSeq}`, instanceId: instance.id, receivedAt: Date.now(), event: { ...params, kind } });
         if (this.sends.length > MAX_SENDS) this.sends.splice(0, this.sends.length - MAX_SENDS);
         this.syncSendCounts();
         this.changed(true);

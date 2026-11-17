@@ -71,7 +71,7 @@ export function commentItems(comment: ReviewComment): AnnotationItem[] {
     },
   ];
   for (const reply of comment.replies) items.push({ line: comment.endLine, text: clip(`${reply.author === "agent" ? "Agent" : "You"}: ${reply.body}`), kind: "reply" });
-  if (resolved) items.push({ line: comment.endLine, text: "Resolved by the agent; acknowledge it in Review Editor to clear it", kind: "note", severity: "hint" });
+  if (resolved) items.push({ line: comment.endLine, text: "Resolved by the agent: Got it (a) in the Comments tab clears it", kind: "note", severity: "hint" });
   return items;
 }
 

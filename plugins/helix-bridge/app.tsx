@@ -13,6 +13,7 @@ import { FromHelixReceipt, PositionAction, PositionChip } from "./app/composer/C
 import { HelixOverlay } from "./app/overlay/HelixOverlay";
 import { EditorRail } from "./app/rail/Rail";
 import { commandRequest } from "./app/stores";
+import { pageActions } from "./app/pages/pageActions";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
 import { surfaceControls, visibleSurfaces } from "./app/surface/EditorSurface";
 import { HelixSegment, HelixStatusRow, HelixTab, useHelixSegmentVisible } from "./app/thread/ThreadParts";
@@ -90,9 +91,32 @@ export default definePluginApp((app) => {
       if (threadId) commandRequest.set({ kind: "open", threadId, at: Date.now() });
     },
   });
+  // The editor page's actions (also `:bb-emit <name>` in Helix). Option+Cmd
+  // keys are free in bb (checked against its Keyboard settings).
+  const onPage = () => [...pageActions.keys()][0] ?? null;
+  const pageCommand = (id: string, title: string, action: string, shortcut?: { key: string; alt?: boolean; mod?: boolean; shift?: boolean }) =>
+    app.commands.register({
+      id,
+      title,
+      ...(shortcut ? { defaultShortcut: shortcut } : {}),
+      isAvailable: () => onPage() !== null,
+      run: () => {
+        const threadId = onPage();
+        if (threadId) pageActions.get(threadId)?.(action, []);
+      },
+    });
+  pageCommand("next-file", "Helix: next changed file", "review.next-file", { key: "]", alt: true, mod: true });
+  pageCommand("prev-file", "Helix: previous changed file", "review.prev-file", { key: "[", alt: true, mod: true });
+  pageCommand("viewed", "Helix: mark this file viewed and go to the next", "review.viewed", { key: "v", alt: true, mod: true });
+  pageCommand("send", "Helix: send review comments to the thread", "review.send", { key: "Enter", alt: true, mod: true });
+  pageCommand("chat", "Helix: focus the chat", "chat.focus", { key: "c", alt: true, mod: true });
+  pageCommand("rail-files", "Helix: show the files", "rail.files", { key: "1", alt: true, mod: true });
+  pageCommand("rail-changes", "Helix: show the changes", "rail.changes", { key: "2", alt: true, mod: true });
+  pageCommand("rail-comments", "Helix: show the comments", "rail.comments", { key: "3", alt: true, mod: true });
+
   app.commands.register({
     id: "focus-editor",
-    title: "Helix: switch focus between the file tree and the editor",
+    title: "Helix: switch between the rail and the editor",
     defaultShortcut: { key: "h", mod: true, shift: true },
     isAvailable: () => visibleSurfaces.size > 0,
     run: () => {
@@ -103,7 +127,7 @@ export default definePluginApp((app) => {
   });
   app.commands.register({
     id: "toggle-tree",
-    title: "Helix: show or hide the file tree",
+    title: "Helix: show or hide the files",
     defaultShortcut: { key: "y", mod: true, shift: true },
     isAvailable: () => surfaceControls.size > 0,
     run: () => [...surfaceControls.values()][0]?.toggleTree(),

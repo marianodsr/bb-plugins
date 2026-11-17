@@ -14,7 +14,7 @@ import { z } from "zod";
 import { hostContract, hostSignals } from "./shared/host-contract";
 import { Bridge, BridgeFailure, type BoundInstance } from "./server/bridge";
 import { registerCli } from "./server/cli";
-import { rpcContract, tags, type AppInstance, type Position } from "./server/contract";
+import { rpcContract, tags, type AppInstance, type Position, type RailComment } from "./server/contract";
 import { Annotator } from "./server/annotations";
 import { Follower } from "./server/follow";
 import { AgentWatcher } from "./server/watch";
@@ -27,7 +27,7 @@ import { MIGRATIONS, Store } from "./server/store";
 import { TOOL_NAMES, instructionsFor, registerTools } from "./server/tools";
 
 export { rpcContract } from "./server/contract";
-export type { AppInstance, ChangedFile, Position } from "./server/contract";
+export type { AppInstance, ChangedFile, Position, RailComment } from "./server/contract";
 export type { GhosttyConfig } from "./shared/host-contract";
 
 export const SKILL_NAME = "helix-bridge";
@@ -113,9 +113,14 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: () => bb.sdk,
     service,
     store,
-    commentsChanged: () => void annotator.refresh(),
+    commentsChanged: () => {
+      void annotator.refresh();
+      commentsTouched(null);
+    },
     // :bb-files: the editor page for that thread shows its tree on the file.
     filesRequested: (threadId, path) => bb.realtime.publish("files", { threadId, path, at: Date.now() }),
+    commentRequested: (threadId, request) => bb.realtime.publish("commentRequest", { threadId, request, at: Date.now() }),
+    actionRequested: (threadId, name, args) => bb.realtime.publish("action", { threadId, name, args, at: Date.now() }),
     reloaded: async (instance, event) => {
       bb.log.info(`Helix ${instance.key} reloaded ${String(event.path)} (${String(event.origin)}), ${Array.isArray(event.ranges) ? event.ranges.length : 0} range(s)`);
       if (instance.environmentId) reviews.noteChange(instance.environmentId);
@@ -167,12 +172,55 @@ export default async function plugin(bb: BbPluginApi) {
     service,
     gitRead: async (hostId, input) => (await hostCall("gitRead", input as Record<string, unknown>, { hostId, timeoutMs: 20_000 })) as Awaited<ReturnType<ReviewDeps["gitRead"]>>,
     trace: (message) => bb.log.info(message),
+    persist: (instance, review) => {
+      const startedAt = instance.summary.startedAt;
+      if (!startedAt) return;
+      if (review) store.saveReview(instance.hostId, instance.summary.pid, startedAt, review.id, review.target);
+      else store.clearReview(instance.hostId, instance.summary.pid, startedAt);
+    },
+    recall: (instance) => {
+      const startedAt = instance.summary.startedAt;
+      const saved = startedAt ? store.savedReview(instance.hostId, instance.summary.pid, startedAt) : null;
+      return saved ? { id: saved.reviewId, target: saved.target } : null;
+    },
     changed: (threadId) => {
       if (threadId) bb.rpc.experimental_invalidate([tags.review(threadId)]);
       bb.realtime.publish("review", { threadId, at: Date.now() });
     },
     log: (message) => bb.log.warn(message),
   });
+
+  const reviewCommentSchema = z
+    .object({
+      id: z.string(),
+      threadId: z.string().nullable(),
+      sentThreadId: z.string().nullable().optional(),
+      path: z.string(),
+      startLine: z.number(),
+      endLine: z.number(),
+      snippet: z.string().optional(),
+      body: z.string(),
+      severity: z.string().optional(),
+      state: z.string(),
+      resolvedBy: z.string().nullable().optional(),
+      acknowledgedAt: z.number().nullable().optional(),
+      updatedAt: z.number().optional(),
+      replies: z.array(z.object({ author: z.string(), body: z.string(), createdAt: z.number() }).passthrough()).optional(),
+    })
+    .passthrough();
+  /** A Review Editor comment as the rail shows it: what it means for the owner now. */
+  function railCommentOf(c: z.infer<typeof reviewCommentSchema>): RailComment {
+    const replies = (c.replies ?? []).map((r) => ({ author: r.author === "agent" ? ("agent" as const) : ("user" as const), body: r.body, at: r.createdAt }));
+    const lastAgent = replies.length > 0 && replies[replies.length - 1]!.author === "agent";
+    const state: RailComment["state"] =
+      c.state === "open" ? "unsent" : c.state === "outdated" ? "outdated" : c.state === "resolved" ? (c.resolvedBy === "agent" && !c.acknowledgedAt ? "resolved" : "done") : lastAgent ? "answered" : "sent";
+    return { id: c.id, path: c.path, startLine: c.startLine, endLine: c.endLine, snippet: c.snippet ?? "", body: c.body, severity: c.severity ?? "note", state, replies, local: false, updatedAt: c.updatedAt ?? 0 };
+  }
+  /** Comments changed: the rail and the bar read them again. */
+  function commentsTouched(threadId: string | null) {
+    if (threadId) bb.rpc.experimental_invalidate([tags.comments(threadId)]);
+    bb.realtime.publish("comments", { threadId, at: Date.now() });
+  }
 
   /** Why the last review a thread asked for could not start, for the rail. */
   const reviewErrors = new Map<string, string>();
@@ -181,12 +229,12 @@ export default async function plugin(bb: BbPluginApi) {
     z.string(),
     z.object({ outcome: z.string(), patch: z.object({ patch: z.string(), truncated: z.boolean() }).optional(), message: z.string().optional(), failure: z.object({ message: z.string() }).passthrough().optional() }).passthrough(),
   );
-  const prSchema = z.record(z.string(), z.object({ outcome: z.string(), pullRequest: z.object({ number: z.number() }).passthrough().optional() }).passthrough());
-  /** The environment's pull request number, from bb's GitHub plugin (its own cache), or null. */
-  async function pullRequestOf(environmentId: string): Promise<number | null> {
+  const prSchema = z.record(z.string(), z.object({ outcome: z.string(), pullRequest: z.object({ number: z.number(), url: z.string().optional() }).passthrough().optional() }).passthrough());
+  /** The environment's pull request, from bb's GitHub plugin (its own cache), or null. */
+  async function pullRequestOf(environmentId: string): Promise<{ number: number; url: string | null } | null> {
     const prs = await bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "pullRequests", input: { keys: [environmentId] }, outputSchema: prSchema });
     const pr = prs[environmentId];
-    return pr?.outcome === "available" && pr.pullRequest ? pr.pullRequest.number : null;
+    return pr?.outcome === "available" && pr.pullRequest ? { number: pr.pullRequest.number, url: pr.pullRequest.url ?? null } : null;
   }
   /** The first scope: the branch when it has commits of its own, else the uncommitted changes. */
   async function autoTarget(environmentId: string | null): Promise<string> {
@@ -247,7 +295,7 @@ export default async function plugin(bb: BbPluginApi) {
       const handled: string[] = [];
       for (const record of pending) {
         const outcome = await sends.handle(record, bridge.get(`${hostId}:${record.instanceId}`));
-        bb.log.info(`send ${String(record.event.kind)} from ${hostId}:${record.instanceId}: ${outcome}`);
+        bb.log.info(`send ${String(record.event.kind)} from ${hostId}:${record.instanceId}: ${outcome} (${Date.now() - record.receivedAt} ms after Helix)`);
         handled.push(record.id);
       }
       await hostCall("ackSends", { ids: handled }, { hostId, timeoutMs: 10_000 });
@@ -325,9 +373,12 @@ export default async function plugin(bb: BbPluginApi) {
       const instance = (await service.instancesForThread(threadId))[0] ?? null;
       const capable = Boolean(instance?.summary.capabilities.includes("review"));
       const connected = instance?.summary.status === "connected";
+      // After a plugin reload the review Helix still shows comes back.
+      if (instance && !reviews.forThread(threadId)) await reviews.adopt(instance).catch(() => false);
       const review = reviews.forThread(threadId);
-      const hasPullRequest = instance?.environmentId ? await pullRequestOf(instance.environmentId).then(Boolean, () => false) : false;
-      if (!review || !instance) return { capable, connected, review: null, error: reviewErrors.get(threadId) ?? null, hasPullRequest };
+      const pullRequest = instance?.environmentId ? await pullRequestOf(instance.environmentId).catch(() => null) : null;
+      const hasPullRequest = pullRequest !== null;
+      if (!review || !instance) return { capable, connected, review: null, error: reviewErrors.get(threadId) ?? null, hasPullRequest, pullRequest };
       const resolved = review.resolved;
       // bb's viewed marks: a file is viewed while its revision is the one marked.
       const marks = await bb.sdk.plugins
@@ -359,6 +410,7 @@ export default async function plugin(bb: BbPluginApi) {
         },
         error: null,
         hasPullRequest,
+        pullRequest,
       };
     },
     setViewed: async ({ threadId, path, viewed }) => {
@@ -417,6 +469,71 @@ export default async function plugin(bb: BbPluginApi) {
         throw error;
       }
     },
+    comments: async ({ threadId }) => {
+      const info = await service.threadInfo(threadId);
+      const local = store.localComments(threadId).map((c): RailComment => ({
+        id: c.id,
+        path: info.path && c.path.startsWith(`${info.path}/`) ? c.path.slice(info.path.length + 1) : c.path,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        snippet: c.snippet,
+        body: c.body,
+        severity: "note",
+        state: c.sentAt === null ? "unsent" : "sent",
+        replies: [],
+        local: true,
+        updatedAt: c.sentAt ?? c.createdAt,
+      }));
+      let source: "review-editor" | "local" = "local";
+      let kept: RailComment[] = [];
+      if (info.environmentId && (await sends.reviewEditorRunning())) {
+        source = "review-editor";
+        const { comments } = await bb.sdk.plugins
+          .callRpc({ pluginId: "review-editor", method: "listComments", input: { environmentId: info.environmentId }, outputSchema: z.object({ comments: z.array(reviewCommentSchema) }) })
+          .catch(() => ({ comments: [] as z.infer<typeof reviewCommentSchema>[] }));
+        kept = comments.filter((c) => c.threadId === threadId || c.sentThreadId === threadId).map(railCommentOf);
+      }
+      const all = [...kept, ...local];
+      return {
+        source,
+        comments: all,
+        unsent: all.filter((c) => c.state === "unsent").length,
+        needsYou: all.filter((c) => c.state === "answered" || c.state === "resolved").length,
+      };
+    },
+    createComment: async ({ threadId, path, startLine, endLine, snippet, languageId, modified, body, severity, sendNow }) => {
+      const info = await service.threadInfo(threadId);
+      const instance = (await service.instancesForThread(threadId))[0] ?? null;
+      const absolute = instance ? service.absolute(instance, path) : path;
+      const created = await sends.addComment({ threadId, environmentId: info.environmentId, environmentPath: info.path, path: absolute, startLine, endLine: Math.max(startLine, endLine), snippet, languageId, modified, body, ...(severity ? { severity } : {}) });
+      let message = created.refused ? `Kept in Helix Bridge (Review Editor: ${created.refused})` : "Comment added";
+      if (sendNow && instance) message = await sends.flushFor(instance);
+      return { id: created.id, kept: created.where, message };
+    },
+    notifyHelix: async ({ threadId, message }) => {
+      const instance = (await service.instancesForThread(threadId))[0];
+      if (!instance) return { ok: false };
+      await service.status(instance, message, "warning");
+      return { ok: true };
+    },
+    commentAction: async ({ threadId, commentId, action, body }) => {
+      if (commentId.startsWith("hxc_")) {
+        // Kept here (Review Editor was not running): edit and drop only.
+        if (action === "edit" && body) store.updateCommentBody(commentId, body);
+        else if (action === "delete") store.deleteComment(commentId);
+        else throw new Error("Only Review Editor keeps replies and resolutions");
+      } else {
+        const call = (method: string, input: Record<string, string | string[]>) => bb.sdk.plugins.callRpc({ pluginId: "review-editor", method, input, outputSchema: z.object({}).passthrough() });
+        if (action === "edit") await call("updateComment", { id: commentId, ...(body ? { body } : {}) });
+        else if (action === "delete") await call("deleteComment", { id: commentId });
+        else if (action === "reply") await call("replyToComment", { commentId, body: body ?? "" });
+        else if (action === "reopen") await call("setCommentState", { id: commentId, state: "open" });
+        else if (action === "resolve") await call("setCommentState", { id: commentId, state: "resolved" });
+        else if (action === "acknowledge") await call("acknowledgeComments", { ids: [commentId] });
+      }
+      commentsTouched(threadId);
+      return { ok: true };
+    },
     sendReviewComments: async ({ threadId }) => {
       const instance = (await service.instancesForThread(threadId))[0];
       if (!instance) throw new Error("No Helix is connected to this thread");
@@ -471,6 +588,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     commentsChanged: ({ environmentId, path }) => {
       void annotator.refreshFile(environmentId, path);
+      commentsTouched(null);
       return { accepted: true };
     },
     treeTerminal: ({ threadId }) => tree.terminal(threadId),

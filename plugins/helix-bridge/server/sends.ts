@@ -51,6 +51,10 @@ export interface SendDeps {
   commentsChanged(): void;
   /** `:bb-files` in a Helix the editor page shows: open its tree on `path`. */
   filesRequested?(threadId: string, path: string | null): void;
+  /** `:bb-comment` with no text: the page opens its comment box on the selection. */
+  commentRequested?(threadId: string, request: Record<string, unknown>): void;
+  /** `:bb-emit <name> [args]`: an action the page performs. */
+  actionRequested?(threadId: string, name: string, args: string[]): void;
   /** The review active in this Helix, to name it when its comments go to the agent. */
   reviewTitle?(instance: BoundInstance): string | null;
   /** The user saved a buffer in Helix. */
@@ -115,6 +119,15 @@ export class SendHandler {
       return "reloaded";
     }
     if (kind === "files" || kind === "review") return this.handleRequest(kind, record.event, instance);
+    if (kind === "commentRequest" || kind === "action") {
+      if (!instance.threadId) {
+        await this.deps.service.status(instance, "This Helix is not bound to a bb thread: run `bb hx bind` or open it from a thread", "error");
+        return "dropped: not bound";
+      }
+      if (kind === "commentRequest") this.deps.commentRequested?.(instance.threadId, record.event);
+      else this.deps.actionRequested?.(instance.threadId, String(record.event.name ?? ""), Array.isArray(record.event.args) ? record.event.args.map(String) : []);
+      return kind === "action" ? `action ${String(record.event.name ?? "")}` : "comment box";
+    }
     const parsed = sendEventSchema.safeParse(record.event);
     if (!parsed.success) {
       await this.deps.service.status(instance, "bb could not read that send", "error");
@@ -200,19 +213,42 @@ export class SendHandler {
       return "dropped: no selection";
     }
     const lines = rangeLines(range);
+    const result = await this.addComment({ threadId, environmentId, environmentPath, path: event.path, startLine: lines.start, endLine: lines.end, snippet: range.text, languageId: event.languageId, modified: event.modified, body });
+    const unsent = await this.unsentCount(threadId, environmentId);
+    await this.deps.service.status(instance, result.refused ? `Comment kept in Helix Bridge (Review Editor: ${result.refused}): ${unsent} not sent yet` : `Comment added: ${unsent} not sent yet`);
+    return result.where === "review-editor" ? "comment (review-editor)" : result.refused ? `comment (local; review-editor refused: ${result.refused})` : "comment (local)";
+  }
+
+  /**
+   * Keep a comment on lines of a file (absolute path): in Review Editor when
+   * it runs and the file is in the workspace, else here. The native comment
+   * box and :bb-comment both come here.
+   */
+  async addComment(input: {
+    threadId: string;
+    environmentId: string | null;
+    environmentPath: string | null;
+    path: string;
+    startLine: number;
+    endLine: number;
+    snippet: string;
+    languageId: string;
+    modified: boolean;
+    body: string;
+    severity?: string;
+  }): Promise<{ where: "review-editor" | "local"; id: string; refused: string | null }> {
     let refused: string | null = null;
-    if (environmentId && environmentPath && within(environmentPath, event.path) && (await this.reviewEditorRunning())) {
+    const { threadId, environmentId, environmentPath } = input;
+    if (environmentId && environmentPath && within(environmentPath, input.path) && (await this.reviewEditorRunning())) {
       try {
-        await this.deps.sdk().plugins.callRpc({
+        const created = await this.deps.sdk().plugins.callRpc({
           pluginId: REVIEW_EDITOR,
           method: "createComment",
-          input: { environmentId, path: relative(environmentPath, event.path), startLine: lines.start, endLine: lines.end, body, threadId },
+          input: { environmentId, path: relative(environmentPath, input.path), startLine: input.startLine, endLine: input.endLine, body: input.body, threadId, ...(input.severity ? { severity: input.severity } : {}) },
           outputSchema: reviewCommentSchema,
         });
-        const pending = await this.reviewPending(environmentId, threadId);
-        await this.deps.service.status(instance, `Comment added: ${pending.length} pending for ${await this.titleOf(threadId)} (:bb-comments-send)`);
         this.deps.commentsChanged();
-        return "comment (review-editor)";
+        return { where: "review-editor", id: created.id, refused: null };
       } catch (error) {
         // Review Editor quotes the file on disk; lines that exist only in the
         // unsaved buffer are refused. Keep the comment here instead.
@@ -222,21 +258,26 @@ export class SendHandler {
     const comment: LocalComment = {
       id: `hxc_${randomUUID().slice(0, 10)}`,
       threadId,
-      path: event.path,
-      languageId: event.languageId,
-      startLine: lines.start,
-      endLine: lines.end,
-      snippet: range.text,
-      body,
-      modified: event.modified,
+      path: input.path,
+      languageId: input.languageId,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      snippet: input.snippet,
+      body: input.body,
+      modified: input.modified,
       createdAt: Date.now(),
       sentAt: null,
     };
     this.deps.store.addComment(comment);
-    const pending = this.deps.store.pendingComments(threadId);
-    await this.deps.service.status(instance, refused ? `Comment kept in Helix Bridge (Review Editor: ${refused}): ${pending.length} pending (:bb-comments-send)` : `Comment added: ${pending.length} pending (:bb-comments-send)`);
     this.deps.commentsChanged();
-    return refused ? `comment (local; review-editor refused: ${refused})` : "comment (local)";
+    return { where: "local", id: comment.id, refused };
+  }
+
+  /** Comments of this thread not sent yet, wherever they are kept. */
+  async unsentCount(threadId: string, environmentId: string | null): Promise<number> {
+    const local = this.deps.store.pendingComments(threadId).length;
+    if (!environmentId || !(await this.reviewEditorRunning())) return local;
+    return local + (await this.reviewPending(environmentId, threadId).then((p) => p.length, () => 0));
   }
 
   private async reviewPending(environmentId: string, threadId: string): Promise<z.infer<typeof reviewCommentSchema>[]> {
@@ -254,7 +295,7 @@ export class SendHandler {
     if (!instance.threadId) throw new BridgeFailure("not_found", "this Helix is not bound to a thread");
     const info = await this.deps.service.threadInfo(instance.threadId);
     const result = await this.flush(instance, instance.threadId, info.title ?? instance.threadId, info.environmentId);
-    return result === "flushed 0" ? "No pending comments" : `Sent the comments to ${info.title ?? "the thread"}`;
+    return result === "flushed 0" ? "No comments to send" : `Sent to ${info.title ?? "the thread"}`;
   }
 
   private async flush(instance: BoundInstance, threadId: string, title: string, environmentId: string | null): Promise<string> {
@@ -295,10 +336,10 @@ export class SendHandler {
       parts.push(`${local.length} (local)`);
     }
     if (sent === 0) {
-      await this.deps.service.status(instance, "No pending comments", "warning");
+      await this.deps.service.status(instance, "No comments to send", "warning");
       return "flushed 0";
     }
-    await this.deps.service.status(instance, `Sent ${sent} comment${sent === 1 ? "" : "s"} to ${title}`);
+    await this.deps.service.status(instance, `Sent to ${title}`);
     this.deps.commentsChanged();
     return `flushed ${parts.join(" + ")}`;
   }

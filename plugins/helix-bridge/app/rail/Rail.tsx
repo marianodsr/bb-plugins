@@ -7,13 +7,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useBbNavigate, useRealtime, useSettings } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { EmptyState, ShortcutSheet, ThreadChip, useHotkeys } from "../../kit";
+import { ShortcutSheet, ThreadChip, useHotkeys } from "../../kit";
 import { useGhostty, useInstances } from "../data";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { TreePane, type TreeHandle } from "../surface/TreePane";
 import { ChangesTab } from "./ChangesTab";
 import { useChanges } from "./changesStore";
-import { editorFocus, pendingTreeReveal, railFocus, railHasFocus, railSheet, railTab, sidebarRailVisible, useRailSheet, useRailTab, type RailTab } from "./railStore";
+import { CommentsTab } from "./CommentsTab";
+import { useComments } from "./commentsStore";
+import { editorFocus, pendingTreeReveal, railFocus, railHasFocus, railSheet, railShown, railTab, sidebarRailVisible, useRailSheet, useRailTab, type RailTab } from "./railStore";
 
 /** The rail in bb's sidebar. Collapsed or a closed drawer, it draws nothing and the page offers it as a sheet. */
 export function EditorRail({ subPath }: { subPath: string }) {
@@ -47,10 +49,15 @@ export function EditorRail({ subPath }: { subPath: string }) {
     const observer = new IntersectionObserver(([entry]) => {
       const visible = Boolean(entry?.isIntersecting);
       setOnScreen(visible);
+      if (visible && !el.closest("[inert]")) railShown.set(threadId);
+      else if (railShown.get() === threadId) railShown.set(null);
       if (visible && !el.closest("[inert]") && railSheet.get() === threadId) railSheet.set(null);
     });
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (railShown.get() === threadId) railShown.set(null);
+    };
   }, [threadId]);
   if (!threadId) return null;
   return (
@@ -67,6 +74,9 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
   const { data } = useChanges(threadId);
   const files = data?.review?.files;
   const unviewed = useMemo(() => files?.filter((f) => !f.viewed).length ?? 0, [files]);
+  const comments = useComments(threadId).data;
+  // What needs the owner (the agent answered or resolved), else what waits to be sent.
+  const commentCount = comments ? comments.needsYou || comments.unsent : 0;
 
   useEffect(() => {
     const focus = () => {
@@ -115,7 +125,17 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       ariaLabel: unviewed > 0 ? `Changes, ${unviewed} not viewed` : "Changes",
       title: "Changes (2)",
     },
-    { value: "comments" as const, label: "Comments", title: "Comments (3)" },
+    {
+      value: "comments" as const,
+      label: (
+        <span className="inline-flex items-center gap-1">
+          Comments
+          {commentCount > 0 ? <span className={cn("tabular-nums", comments?.needsYou ? "text-foreground" : "text-muted-foreground")}>{commentCount}</span> : null}
+        </span>
+      ),
+      ariaLabel: comments?.needsYou ? `Comments, ${comments.needsYou} need you` : commentCount ? `Comments, ${commentCount} not sent` : "Comments",
+      title: "Comments (3)",
+    },
   ];
 
   return (
@@ -138,7 +158,7 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       <div className={cn("relative flex min-h-0 flex-1 flex-col", tab !== "files" && "pt-2")}>
         {tab === "files" ? <FilesTab threadId={threadId} handle={treeHandle} onLeave={onLeave} /> : null}
         {tab === "changes" ? <ChangesTab threadId={threadId} active root={root} onLeave={onLeave} /> : null}
-        {tab === "comments" ? <EmptyState icon="MessageSquare" title="Your comments" description="Comments you write in Helix gather here, with the agent's replies." /> : null}
+        {tab === "comments" ? <CommentsTab threadId={threadId} onLeave={onLeave} /> : null}
       </div>
       <ShortcutSheet trigger={false} />
     </div>

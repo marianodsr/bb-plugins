@@ -14,6 +14,7 @@ import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
 import { createRenderer, type RendererDiagnostics, type SurfaceFont, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
 import { editorFocus as editorFocusers, railFocus, railHasFocus, railSheet, railTab, sidebarRailVisible } from "../rail/railStore";
+import { CommentBox, type CommentRequest } from "./CommentBox";
 import { TreePane, type TreeHandle } from "./TreePane";
 
 /** Pane controls of the visible surfaces, by thread, for the app's commands. */
@@ -145,6 +146,7 @@ function Session({
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<RendererDiagnostics | null>(null);
   const [grid, setGrid] = useState<{ cols: number; rows: number } | null>(null);
+  const [commentRequest, setCommentRequest] = useState<CommentRequest | null>(null);
   const [restart, setRestart] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -355,6 +357,15 @@ function Session({
     };
   }, [threadId, active]);
 
+  // :bb-comment with no text: the comment box beside the selection.
+  useRealtime("commentRequest", (payload: unknown) => {
+    const message = payload as { threadId?: string; request?: CommentRequest } | null;
+    if (!active || message?.threadId !== threadId || !message.request?.ranges?.length) return;
+    // The box belongs to Helix's pane: a rail sheet over it steps aside.
+    if (railSheet.get() === threadId) railSheet.set(null);
+    setCommentRequest(message.request);
+  });
+
   // :bb-files (space e in the owner's keys): show the tree on that file and focus it.
   useRealtime("files", (payload: unknown) => {
     const request = payload as { threadId?: string; path?: string | null } | null;
@@ -468,6 +479,22 @@ function Session({
         ) : null}
         <div ref={host} className="helix-surface min-h-0 min-w-0 flex-1 overflow-hidden" data-helix-terminal />
       </div>
+      {commentRequest && host.current ? (
+        <CommentBox
+          threadId={threadId}
+          request={commentRequest}
+          pane={{ width: host.current.clientWidth, height: host.current.clientHeight }}
+          cell={
+            diagnostics && diagnostics.dpr > 0
+              ? { width: diagnostics.cell.width / diagnostics.dpr, height: diagnostics.cell.height / diagnostics.dpr }
+              : { width: host.current.clientWidth / Math.max(1, grid?.cols ?? 80), height: host.current.clientHeight / Math.max(1, grid?.rows ?? 24) }
+          }
+          onClose={() => {
+            setCommentRequest(null);
+            editorFocus.current?.();
+          }}
+        />
+      ) : null}
       {state === "exited" ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background p-6" data-helix-exit>
           <div className="flex w-full max-w-xl flex-col gap-3">

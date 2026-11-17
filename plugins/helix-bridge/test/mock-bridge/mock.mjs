@@ -33,6 +33,8 @@ const KIND_OF = {
   "event/files": "files",
   "event/reloaded": "documents",
   "event/review": "review",
+  "event/commentRequest": "commentPrompt",
+  "event/action": "action",
 };
 /** Events the queue may drop when it overflows (all but send). */
 const COALESCABLE = new Set(["event/selection", "event/documentChanged", "event/diagnostics", "event/mode", "event/focus"]);
@@ -204,7 +206,7 @@ export async function startMockBridge(options) {
       case "events/unsubscribe": {
         if (!Array.isArray(params.events)) throw new BridgeError(ERR.invalidParams, "events must be an array", { field: "events" });
         // `files` came with :bb-files; `review` with the review capability.
-        const known = [...EVENT_KINDS, "files", ...(has("review") ? ["review"] : [])];
+        const known = [...EVENT_KINDS, "files", "commentPrompt", "action", ...(has("review") ? ["review"] : [])];
         const unknown = params.events.find((e) => !known.includes(e));
         if (unknown !== undefined) throw new BridgeError(ERR.invalidParams, `unknown event kind ${unknown}`, { field: "events" });
         const kinds = params.events;
@@ -369,6 +371,33 @@ export async function startMockBridge(options) {
         if (![...clients].some((c) => c.subs.has("files"))) return { ok: true, emitted: false, ranFileManager: true };
         const doc = editor.focusedDoc();
         editor.emit("event/files", { path: doc.path, docId: doc.docId, cwd: editor.cwd });
+        return { ok: true, emitted: true };
+      }
+      case "comment": {
+        // :bb-comment with no text: with a commentPrompt subscriber the client
+        // shows its own box; without, Helix's prompt opens (here: nothing).
+        if (![...clients].some((c) => c.subs.has("commentPrompt"))) return { ok: true, emitted: false, prompt: true };
+        const doc = editor.focusedDoc();
+        const view = editor.focused();
+        const range = view.selections[view.primary];
+        const lines = doc.text.split("\n");
+        const text = lines.slice(range.start.line - 1, range.end.line).join("\n");
+        editor.emit("event/commentRequest", {
+          path: doc.path,
+          docId: doc.docId,
+          languageId: doc.languageId ?? "text",
+          version: doc.version,
+          modified: false,
+          ranges: [{ start: range.start, end: range.end, text }],
+          truncated: false,
+          screen: { top: { row: range.start.line - 1, col: 6 }, bottom: { row: range.end.line - 1, col: 6 }, rows: 40, cols: 120 },
+        });
+        return { ok: true, emitted: true };
+      }
+      case "emit": {
+        if (![...clients].some((c) => c.subs.has("action"))) return { ok: false, emitted: false, error: `no client handles ${command.name}` };
+        const doc = editor.focusedDoc();
+        editor.emit("event/action", { name: command.name, args: command.args ?? [], path: doc.path, docId: doc.docId, mode: "normal" });
         return { ok: true, emitted: true };
       }
       case "review": {

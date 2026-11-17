@@ -35,6 +35,15 @@ export const MIGRATIONS = [
      sent_at INTEGER
    )`,
   `CREATE INDEX comments_thread ON comments (thread_id, sent_at)`,
+  // The review active in a Helix, so a plugin reload adopts it again.
+  `CREATE TABLE reviews (
+     host_id TEXT NOT NULL,
+     pid INTEGER NOT NULL,
+     started_at TEXT NOT NULL,
+     review_id TEXT NOT NULL,
+     target TEXT NOT NULL,
+     PRIMARY KEY (host_id, pid, started_at)
+   )`,
 ];
 
 export interface Draft {
@@ -117,7 +126,37 @@ export class Store {
   }
 
   pendingComments(threadId: string): LocalComment[] {
-    const rows = this.db.prepare(`SELECT * FROM comments WHERE thread_id = ? AND sent_at IS NULL ORDER BY path, start_line`).all(threadId) as Record<string, unknown>[];
+    return this.commentRows(`SELECT * FROM comments WHERE thread_id = ? AND sent_at IS NULL ORDER BY path, start_line`, threadId);
+  }
+
+  /** Every comment kept here for a thread (Review Editor not running), newest sent last. */
+  localComments(threadId: string): LocalComment[] {
+    return this.commentRows(`SELECT * FROM comments WHERE thread_id = ? ORDER BY path, start_line LIMIT 500`, threadId);
+  }
+
+  saveReview(hostId: string, pid: number, startedAt: string, reviewId: string, target: string): void {
+    this.db.prepare(`INSERT OR REPLACE INTO reviews (host_id, pid, started_at, review_id, target) VALUES (?, ?, ?, ?, ?)`).run(hostId, pid, startedAt, reviewId, target);
+  }
+
+  clearReview(hostId: string, pid: number, startedAt: string): void {
+    this.db.prepare(`DELETE FROM reviews WHERE host_id = ? AND pid = ? AND started_at = ?`).run(hostId, pid, startedAt);
+  }
+
+  savedReview(hostId: string, pid: number, startedAt: string): { reviewId: string; target: string } | null {
+    const row = this.db.prepare(`SELECT review_id, target FROM reviews WHERE host_id = ? AND pid = ? AND started_at = ?`).get(hostId, pid, startedAt) as { review_id: string; target: string } | undefined;
+    return row ? { reviewId: row.review_id, target: row.target } : null;
+  }
+
+  updateCommentBody(id: string, body: string): boolean {
+    return this.db.prepare(`UPDATE comments SET body = ? WHERE id = ? AND sent_at IS NULL`).run(body, id).changes > 0;
+  }
+
+  deleteComment(id: string): boolean {
+    return this.db.prepare(`DELETE FROM comments WHERE id = ?`).run(id).changes > 0;
+  }
+
+  private commentRows(sql: string, threadId: string): LocalComment[] {
+    const rows = this.db.prepare(sql).all(threadId) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: String(r.id),
       threadId: String(r.thread_id),
@@ -129,7 +168,7 @@ export class Store {
       body: String(r.body),
       modified: Number(r.modified) === 1,
       createdAt: Number(r.created_at),
-      sentAt: null,
+      sentAt: r.sent_at === null || r.sent_at === undefined ? null : Number(r.sent_at),
     }));
   }
 

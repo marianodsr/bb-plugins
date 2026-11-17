@@ -75,5 +75,13 @@ export function sidebarRailVisible(threadId: string): boolean {
   return r.width > 0 && r.right > 0 && r.left < window.innerWidth;
 }
 
+/** The thread whose sidebar rail is on screen now (for the review bar), or null. */
+export const railShown = store<string | null>(null);
+export function useRailShown(threadId: string): boolean {
+  const shown = useSyncExternalStore(railShown.subscribe, railShown.get);
+  const sheet = useRailSheet();
+  return shown === threadId || sheet === threadId;
+}
+
 /** A tree reveal asked for before the tree was on screen (`:bb-files`). */
 export const pendingTreeReveal = store<{ threadId: string; path: string | null; focus: boolean; at: number } | null>(null);

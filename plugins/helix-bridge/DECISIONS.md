@@ -419,3 +419,43 @@ conservatively. Newest last.
     rail, the tree toggle to ⇧⌘Y and the rail itself.
 71. **Palette "Helix: reload buffers changed on disk" is gone**: a Helix
     with `watch` reloads by itself; `bb hx reload` remains for the rare case.
+
+## Second pass: comments
+
+72. **The comment box replaces Helix's prompt only where bb draws Helix**:
+    `commentPrompt` and `action` are subscribed (one kind per request, as
+    `files`) only for an instance whose registry carries both
+    `BB_THREAD_ID` and `BB_TERMINAL_SESSION_ID`. Elsewhere `:bb-comment`
+    opens Helix's own prompt and `:bb-emit` says no client handles it.
+73. **The box is placed from Helix's cells**: below the selection's last row
+    when it fits, else above its first row, else resting on the pane's
+    bottom edge; clamped inside Helix's pane, never over the rail (a rail
+    sheet steps aside when the box opens). Cell size comes from the
+    renderer (device pixels over the pixel ratio). Measured on the real
+    build: 13-16 ms from Enter to the box (one frame).
+74. **Lines from a Helix selection**: a selection that ends at column 1 of a
+    line ends on the line before (what `x` selects), as `:bb-comment` does.
+75. **The box keeps comments where `:bb-comment` does** (Review Editor when it
+    runs and the file is in the workspace, else Helix Bridge's own list);
+    the two paths share one function. ⌘Enter keeps the comment, then sends
+    every comment not sent yet with the handoff.
+76. **Comment states, as the owner sees them**: not sent (Review Editor's
+    `open`), sent, answered (sent, the last reply is the agent's), resolved
+    by the agent (until acknowledged), done (acknowledged, or resolved by
+    the owner; hidden behind "N done"), outdated. The Comments tab's count is
+    what needs the owner (answered plus resolved), else what waits to be
+    sent.
+77. **One verb, one result**: every send path says "Sent to <thread>"
+    (Helix's status line, the bar's chip), and "Comment added: N not sent
+    yet" replaces "N pending (:bb-comments-send)".
+78. **The handoff lands where the work went**: the chat's composer when the
+    chat is open, else the thread chip at the top of the rail (the chat is
+    closed by default when Helix would be narrow). Reduced motion: no
+    flight, the chip cross-fades.
+79. **Dropping a comment takes `d` twice** in the Comments tab (the hint says
+    so), not a dialog: dialogs are for destructive confirmation of bigger
+    things, and an unsent comment is small.
+80. **`:bb-emit` actions and the Option-Cmd keys are one table** (app/pages/
+    pageActions.ts): the palette commands, the keys and Helix's bindings all
+    call it, so an action has one name everywhere. `rail.notes` is accepted
+    as `rail.comments` (the design's first name).

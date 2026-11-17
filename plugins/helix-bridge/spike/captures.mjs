@@ -29,13 +29,27 @@ for (const theme of themes) {
     for (const scene of scenes) {
       const { browser, page } = await launch({ width, height: width < 600 ? 860 : 900, theme });
       try {
-        await page.evaluateOnNewDocument((tab) => localStorage.setItem("helix-bridge.rail.tab", tab), scene === "files" ? "files" : "changes");
+        await page.evaluateOnNewDocument((tab) => localStorage.setItem("helix-bridge.rail.tab", tab), scene === "files" ? "files" : scene === "comments" ? "comments" : "changes");
         await page.goto(`${SERVER}/plugins/helix-bridge/editor/${thread}`, { waitUntil: "networkidle2", timeout: 45000 });
         await page.waitForSelector("[data-helix-terminal]", { timeout: 30000 });
         await sleep(4500);
         await page.evaluate(() => document.querySelector("[data-helix-terminal] textarea")?.focus());
-        await chord(page, ["Meta", "Shift"], "h");
-        await sleep(900);
+        if (scene === "box") {
+          // Three lines selected in Helix, then the comment box.
+          await page.keyboard.press("Escape");
+          await page.keyboard.type(":o services/auth/token.go");
+          await page.keyboard.press("Enter");
+          await sleep(700);
+          await page.keyboard.type("12Gxxx");
+          await page.keyboard.type(":bb-comment");
+          await page.keyboard.press("Enter");
+          await sleep(900);
+          await page.keyboard.type("Return an error here instead of an empty string.");
+          await sleep(300);
+        } else {
+          await chord(page, ["Meta", "Shift"], "h");
+          await sleep(900);
+        }
         if (scene === "changes") {
           await page.keyboard.press("j");
           await sleep(700);
