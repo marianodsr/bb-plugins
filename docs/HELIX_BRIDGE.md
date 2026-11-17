@@ -241,6 +241,87 @@ ARCHITECTURE.md; for the plugin:
 - Commit everything needed to build and test, including the mock bridge and
   driver scripts.
 
+### Reviewing changes in the editor
+
+Requirement 8 in the fork's ARCHITECTURE.md; the contract is `review/set`,
+`review/clear`, `review/state`, `event/review`, `:bb-review` and `:bb-diff`
+in PROTOCOL.md. The fork draws the diff and owns the picker; the plugin
+works out what the review is and keeps it current.
+
+- **Targets.** `event/review` carries the text the user typed after
+  `:bb-review`. Resolve it for the instance's environment:
+
+  | Target | Base | Files |
+  |---|---|---|
+  | `uncommitted` | `HEAD` (`base: null`) | the working tree's changes |
+  | `branch` | the merge base with the environment's base branch | everything since the branch forked, committed or not |
+  | `pr` | the merge base with the pull request's base branch | the same, for the thread's pull request; says so if there is none |
+  | `turn` | the commit or snapshot the last agent turn started from | what that turn changed |
+  | `commit <sha>` | that commit's parent | that commit's files |
+  | `off` | | `review/clear` |
+
+  Use the bundled Git plugin's reads for files, counts and the merge base
+  (`bb plugin rpc inspect bb--git`), and the GitHub pull-request plugin for
+  the pull request's base branch. An unknown target, a missing revision or a
+  non-git environment is answered on Helix's status line with the reason.
+- **Keeping it current.** While a review is active, re-send `review/set`
+  with the same id when the environment's files or refs change (debounced),
+  so the list grows as the agent works. Also set the `review` locations list
+  with every hunk across the files, so `:bb-next` and `:bb-prev` walk the
+  whole review, file to file.
+- **Comments** made during a review are ordinary review comments
+  (`:bb-comment`, `:bb-comments-send`); `event/send` carries `reviewId`.
+  The handoff prompt names the review ("Review of this branch against
+  main") so the agent knows what the comments are about.
+- **From bb.** A palette command and a control on the editor page start a
+  review with a target menu and show the active review (title, files
+  changed, open comments, Send comments). The Review Editor's list of
+  changed files gets "Open in Helix" when an instance is bound, which opens
+  the file there with the review active.
+- **For agents**: `helix_review` starts or ends a review for the user
+  ("show the user what I changed"), with the same targets.
+
+### A file tree beside the editor, with yazi
+
+Requirement 9. The editor surface gains a second pane: yazi on the left,
+Helix on the right, in one surface the plugin owns.
+
+- **Sessions.** yazi runs in its own bb terminal session, started by the
+  plugin in the instance's workspace, drawn with the same renderer as the
+  editor. One per editor session; closing the editor closes it.
+- **Opening files.** Choosing a file in yazi opens it in the bound Helix
+  through the bridge (`editor/open`), and focus moves to the editor pane.
+  The clean way is yazi's own edit opener, which runs `$EDITOR`: start the
+  session with `EDITOR` set to a command that opens the path in the bound
+  instance and returns at once. Directories, images and other non-text
+  files keep yazi's own behaviour.
+- **Following the editor.** When the focused file in Helix changes, the
+  tree reveals it (yazi's `ya` messaging, or a small Lua plugin in a
+  configuration the plugin generates, whichever the installed yazi
+  supports; the owner has 0.4.2). Debounced, and never while the user is
+  moving in the tree.
+- **The user's yazi.** Their keymap and theme apply. Never write to
+  `~/.config/yazi`; if the tree needs settings of its own (a single column
+  in a narrow pane), generate a configuration directory in the plugin's
+  data that layers on theirs and point `YAZI_CONFIG_HOME` at it.
+- **Layout and keys.** The tree is a narrow pane (about 30 columns,
+  resizable, remembered), hidden by default on narrow surfaces. Cmd belongs
+  to bb, so pane control is on Cmd: one shortcut shows or hides the tree,
+  one moves focus between tree and editor. Every other key goes to whichever
+  pane has focus. Only the focused pane sends resize.
+- **Without yazi** the tree control shows a setup state with the install
+  command; `bb hx doctor` checks for it; nothing else changes.
+- **During a review** the tree can show only the changed files (a toggle),
+  if yazi's filtering makes that clean; otherwise leave it.
+
+### The position is not sent unless asked
+
+The owner does not want the editor position attached to every message. The
+`positionInMessages` setting defaults to off (the coordinator has already
+turned it off in their settings). With it off, nothing is added to messages
+and no chip is shown; the composer keeps a control to attach the position to
+one message, and agents can always call `helix_selection`.
+
 ## Build order
 
 1. Host entry and server against a mock bridge (a small Node script that
