@@ -146,8 +146,9 @@ describe("instances and bindings", () => {
     const served = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
     );
-    // helix_edit only with the toolEdit setting: agents edit files, Helix shows it.
-    expect(names(served.tools)).toEqual(TOOL_NAMES.filter((t) => t !== "helix_edit"));
+    // The core five; helix_edit, helix_panes and helix_command only with their settings.
+    expect(names(served.tools)).toEqual(["helix_selection", "helix_show", "helix_tour", "helix_diagnostics", "helix_query"]);
+    expect(served.instructions).not.toMatch(/helix_command/u);
     expect(served.instructions).toMatch(/helix_show/u);
     expect(served.instructions).not.toMatch(/helix_edit/u);
     expect(served.instructions).toMatch(/Edit files with your normal tools/u);

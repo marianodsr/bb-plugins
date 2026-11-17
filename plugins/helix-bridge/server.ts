@@ -47,8 +47,8 @@ export default async function plugin(bb: BbPluginApi) {
     autoReload: { type: "boolean", label: "Reload buffers when files change", description: "Reload Helix's unchanged buffers when bb sees files change. Buffers with unsaved changes are never touched.", default: true },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
     toolEdit: { type: "boolean", label: "Agents can edit in Helix (helix_edit)", description: "Offer agents a tool that applies edits inside your Helix buffers. Off: agents edit files with their own tools and Helix shows the change.", default: false },
-    toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: true },
-    toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: true },
+    toolPanes: { type: "boolean", label: "Agents can arrange panes (helix_panes)", description: "Offer agents a tool to list, focus and close Helix's panes.", default: false },
+    toolCommand: { type: "boolean", label: "Agents can run Helix commands (helix_command)", description: "Offer agents a tool to run any Helix command, under its command policy.", default: false },
     treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
@@ -355,7 +355,7 @@ export default async function plugin(bb: BbPluginApi) {
   // session's tool list when the session starts, so a thread that started
   // before Helix connected gets them on its next session.
   // Which optional tools are offered (configure is synchronous: kept current).
-  let switches = { helix_edit: false, helix_panes: true, helix_command: true } as Record<string, boolean>;
+  let switches = { helix_edit: false, helix_panes: false, helix_command: false } as Record<string, boolean>;
   const readSwitches = (v: { toolEdit: boolean; toolPanes: boolean; toolCommand: boolean }) => (switches = { helix_edit: v.toolEdit, helix_panes: v.toolPanes, helix_command: v.toolCommand });
   void settings.get().then(readSwitches, () => {});
   settings.onChange((next) => readSwitches(next));

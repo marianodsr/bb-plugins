@@ -63,8 +63,8 @@ Some providers list these as deferred tools (for example
 Which tools you get depends on what the connected Helix can do and on the
 user's settings: `helix_selection` and `helix_show` need only the basics;
 `helix_tour`, `helix_diagnostics` and `helix_query` appear when Helix offers
-them; `helix_panes`, `helix_command` and `helix_edit` only when the user
-allows them. Tools are attached when your session starts with a connected Helix
+them; `helix_panes`, `helix_command` and `helix_edit` are off unless the
+user turns them on (settings `toolPanes`, `toolCommand`, `toolEdit`). Tools are attached when your session starts with a connected Helix
 serving the thread; a thread that started earlier gets them in its next
 session. Until then, use the CLI. A tool that answers "this Helix does not
 offer ... yet" is telling you a fact: say so instead of retrying.

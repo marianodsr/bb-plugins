@@ -19,19 +19,50 @@ The editor is `hxb` on PATH (setting `hxbPath` overrides). The bridge
 directory follows Helix: `$XDG_CACHE_HOME/helix/bridge` or
 `~/.cache/helix/bridge` (setting `bridgeDir` overrides).
 
+## Keys in Helix
+
+The bridge's commands have no keys of their own; bind them in
+`~/.config/helix/config.toml`. Write them as macros (`"@:command<ret>"`):
+Helix refuses a whole config that names a typed command it lacks, so a plain
+`":bb-files"` would make a stock `hx` reject the file, while a macro is only
+looked up when pressed. The full suggested set is
+`bb-bridge/config/keys-bb.example.toml` in the fork; the essentials:
+
+```toml
+[keys.normal.space]
+e = "@:bb-files<ret>"          # the file tree beside the editor
+
+[keys.normal.space.t]
+s = "@:bb-send<ret>"           # selection to the thread's composer
+c = "@:bb-comment<ret>"        # comment on the selection
+C = "@:bb-comments-send<ret>"  # send the pending comments
+n = "@:bb-next<ret>"           # next place (agent changes, tour, review)
+p = "@:bb-prev<ret>"
+g = "@:bb-go<ret>"             # a jump that waited while you typed
+
+[keys.select.space]
+e = "@:bb-files<ret>"
+
+[keys.select.space.t]
+s = "@:bb-send<ret>"
+c = "@:bb-comment<ret>"
+```
+
 ## The file tree
 
 With [yazi](https://yazi-rs.github.io) installed (`brew install yazi`; `bb hx
-doctor` checks), the editor page shows a file tree beside Helix. Choose a file
-(Enter, or your opener key) and it opens in Helix, and focus moves to the
-editor. When the file in Helix changes, the tree moves to it, unless you are
-moving in the tree right then.
+doctor` checks), the editor page has a file tree beside Helix. It works as a
+picker: choose a file (Enter, or your opener key) and it opens in Helix and
+the tree closes, with you in the editor (setting `treeStaysOpen` keeps it
+showing). Escape or `q` closes it too. While it shows, it follows the file
+you are in, unless you are moving in the tree right then.
 
 | Keys | |
 |---|---|
+| `space e` in Helix (`:bb-files`) | open the tree on the file you are in, focused |
 | ⌘⇧Y | show or hide the tree (also the folder button in the page header) |
 | ⌘⇧H | move focus between the tree and the editor |
-| `q` in the tree | quit yazi: the tree hides, Helix stays |
+| Escape or `q` in the tree | close the tree, back to Helix |
 
 Drag the divider to resize; width and visibility are remembered in this
 browser (the tree starts hidden on narrow windows). Your own yazi
