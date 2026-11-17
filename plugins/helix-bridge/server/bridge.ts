@@ -81,6 +81,8 @@ export class Bridge {
   private resolving: Promise<void> | null = null;
   private resolveAgain = false;
   private structureKey = "";
+  /** State signals received per host, for `bb hx state`. */
+  readonly signalCounts = new Map<string, number>();
 
   constructor(private readonly deps: BridgeDeps) {}
 
@@ -117,6 +119,7 @@ export class Bridge {
 
   /** A host's coalesced state signal. */
   onState(hostId: string, payload: { bridgeDir: string; instances: InstanceSummary[] }): void {
+    this.signalCounts.set(hostId, (this.signalCounts.get(hostId) ?? 0) + 1);
     const previous = this.hosts.get(hostId);
     this.hosts.set(hostId, { bridgeDir: payload.bridgeDir, dirExists: previous?.dirExists ?? true, instances: payload.instances, error: null, seenAt: Date.now() });
     const known = new Set((previous?.instances ?? []).map((i) => `${i.id}\0${i.startedAt}`));

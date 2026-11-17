@@ -95,7 +95,7 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
           async run({ options }, ctx) {
             return guard(async () => {
               const instance = await target(options.instance, ctx.threadId);
-              return { exitCode: 0, stdout: stateText(instance, await titleOf(instance)) };
+              return { exitCode: 0, stdout: stateText(instance, await titleOf(instance), service.bridge.signalCounts.get(instance.hostId)) };
             });
           },
         }),

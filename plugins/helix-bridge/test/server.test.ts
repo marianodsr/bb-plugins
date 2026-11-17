@@ -1,0 +1,269 @@
+// The server end to end in-process: bb's fake plugin host, its host-RPC
+// driver wired to a real InstanceManager, and the mock bridge behind it.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createFakePluginHost,
+  makeHostResponse,
+  makePluginAgentConfigurationContext,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { InstanceManager } from "../host/manager";
+import plugin from "../server";
+import { parseLocation } from "../server/cli";
+import { hunksFromDiff } from "../server/follow";
+import { selectionBlock } from "../server/sends";
+import { TOOL_NAMES } from "../server/tools";
+// @ts-expect-error plain ESM test helper without types
+import { startMockBridge } from "./mock-bridge/mock.mjs";
+
+const workspace = join(import.meta.dirname, "fixtures", "workspace");
+const HOST = "host_test";
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function until<T>(read: () => T | undefined | null | false | Promise<T | undefined | null | false>, timeoutMs = 4000): Promise<T> {
+  const start = Date.now();
+  for (;;) {
+    const value = await read();
+    if (value) return value;
+    if (Date.now() - start > timeoutMs) throw new Error("timed out waiting");
+    await wait(25);
+  }
+}
+
+let dir: string;
+let mock: Awaited<ReturnType<typeof startMockBridge>>;
+let manager: InstanceManager;
+let fake: ReturnType<typeof createFakePluginHost>;
+let sent: { threadId: string; text: string }[];
+let reconcile: { controller: AbortController; done: Promise<void> };
+
+const textOf = (result: unknown) => ((result as { content: { text: string }[] }).content ?? []).map((c) => c.text).join("\n");
+
+async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" }) {
+  dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+  mock = await startMockBridge({ dir, workspace, open: ["main.go"], pid: process.pid, env });
+  sent = [];
+  fake = createFakePluginHost({
+    pluginId: "helix-bridge",
+    agentSkillIds: ["helix-bridge"],
+    settings: { bridgeDir: dir },
+    sdk: {
+      hosts: { list: async () => [makeHostResponse({ id: HOST, status: "connected" })] },
+      environments: {
+        list: async () => [{ id: "env_test", hostId: HOST, path: workspace }] as never,
+        get: async ({ environmentId }: { environmentId: string }) => ({ id: environmentId, hostId: HOST, path: environmentId === "env_test" ? workspace : "/elsewhere" }) as never,
+      },
+      threads: {
+        // thr_nobody lives in another environment; every other thread in env_test.
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: threadId === "thr_nobody" ? "env_other" : "env_test", title: `Thread ${threadId}` }),
+        list: async () => [makeThreadResponse({ id: "thr_env", environmentId: "env_test" })],
+        send: async (args: { threadId: string; input: { text: string }[] }) => {
+          sent.push({ threadId: args.threadId, text: args.input[0]!.text });
+          return {} as never;
+        },
+      },
+      plugins: { list: async () => [] as never },
+      system: { config: async () => ({ primaryHostId: HOST }) as never },
+    } as never,
+    experimental_callHostRpc: async ({ method, input }) => {
+      const args = input as Record<string, unknown>;
+      switch (method) {
+        case "instances":
+          manager.scan();
+          return { bridgeDir: dir, dirExists: true, instances: manager.list() };
+        case "call":
+          return manager.call(String(args.instanceId), String(args.method), args.params as Record<string, unknown>, Number(args.timeoutMs ?? 2500));
+        case "pendingSends":
+          return { sends: manager.pendingSends() };
+        case "ackSends":
+          return { remaining: manager.ackSends(args.ids as string[]) };
+        default:
+          throw new Error(`unexpected host call ${method}`);
+      }
+    },
+  });
+  manager = new InstanceManager(dir, {
+    emitState: (payload) => void fake.harness.behavior.experimental_emitHostSignal(HOST, "state", payload),
+    leaseWanted: () => {},
+  });
+  manager.start();
+  await until(() => manager.list()[0]?.status === "connected");
+  await plugin(fake.bb);
+  reconcile = fake.harness.behavior.runService("reconcile");
+  await until(async () => (await fake.harness.behavior.runCli(["list"])).stdout.includes("pid"));
+}
+
+beforeEach(async () => {
+  await setup();
+});
+
+afterEach(async () => {
+  reconcile.controller.abort();
+  await reconcile.done.catch(() => {});
+  await fake.harness.lifecycle.dispose();
+  manager.dispose();
+  await mock.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+const names = (tools: readonly unknown[]) => tools.map((t) => (typeof t === "string" ? t : (t as { name: string }).name));
+
+describe("instances and bindings", () => {
+  it("lists the instance bound to the thread whose terminal started it", async () => {
+    const out = await fake.harness.behavior.runCli(["list"]);
+    expect(out.stdout).toMatch(/thr_term "Thread thr_term" \(terminal\)/u);
+    const state = await fake.harness.behavior.runCli(["state"], { threadId: "thr_term" });
+    expect(state.stdout).toMatch(/bound by its bb terminal/u);
+    expect(state.stdout).toMatch(/command policy: safe/u);
+  });
+
+  it("offers the tools only to a thread a connected Helix serves", async () => {
+    const served = await fake.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "thr_term" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
+    );
+    expect(names(served.tools)).toEqual([...TOOL_NAMES]);
+    expect(served.instructions).toMatch(/helix_show/u);
+    const sameEnv = await fake.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "thr_x" } as never, environment: { id: "env_test", path: workspace } as never }),
+    );
+    expect(names(sameEnv.tools)).toEqual([...TOOL_NAMES]);
+    const other = await fake.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "thr_y" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
+    );
+    expect(names(other.tools)).toEqual([]);
+  });
+});
+
+describe("agent tools", () => {
+  const ctx = { threadId: "thr_term" };
+
+  it("shows a place and reveals the editor", async () => {
+    const result = await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 7, note: "the helper" }, ctx);
+    expect(textOf(result)).toBe("The user is now at util.go:7 (pane 1).");
+    expect(fake.harness.inspection.realtimeSignals.some((s) => s.channel === "reveal")).toBe(true);
+    expect(mock.control({ cmd: "state" }).status).toEqual({ message: "the helper", severity: "info" });
+  });
+
+  it("reports a deferred jump while the user types", async () => {
+    mock.control({ cmd: "busy" });
+    const result = await fake.harness.behavior.callAgentTool("helix_show", { path: "util.go", line: 3 }, ctx);
+    expect(textOf(result)).toMatch(/^Deferred: the user is typing.*:bb-go/u);
+    expect(mock.control({ cmd: "state" }).pendingJump).toBe(true);
+  });
+
+  it("sets up a tour and lands on the first stop", async () => {
+    const result = await fake.harness.behavior.callAgentTool(
+      "helix_tour",
+      { title: "Greeting flow", stops: [{ path: "main.go", line: 19, note: "starts here" }, { path: "main.go", line: 10, note: "constructor" }], now: true },
+      ctx,
+    );
+    expect(textOf(result)).toMatch(/Tour "Greeting flow" with 2 stops. The user is at stop 1, main.go:19/u);
+    expect(mock.control({ cmd: "state" }).lists).toEqual({ tour: 2 });
+  });
+
+  it("answers language-server queries as path:line with the preview", async () => {
+    const def = await fake.harness.behavior.callAgentTool("helix_query", { kind: "definition", path: "util.go", line: 8, col: 16 }, ctx);
+    expect(textOf(def)).toBe("main.go:10:6  func NewGreeter(name string) *Greeter {");
+    const refs = await fake.harness.behavior.callAgentTool("helix_query", { kind: "references", path: "main.go", line: 10, col: 6, limit: 1 }, ctx);
+    expect(textOf(refs)).toMatch(/\.\.\. 2 more/u);
+  });
+
+  it("reads the selection, diagnostics and panes", async () => {
+    mock.control({ cmd: "select", line: 14, col: 1, endLine: 16, endCol: 1 });
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_selection", {}, ctx))).toMatch(/main.go:14-15[\s\S]*```go\nfunc \(g \*Greeter\) Greet\(\) string \{/u);
+    mock.control({ cmd: "diagnostics", path: "main.go", errors: 1, warnings: 0 });
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_diagnostics", {}, ctx))).toMatch(/^error   main.go:1:1/u);
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_panes", {}, ctx))).toMatch(/\* pane 1  main.go/u);
+  });
+
+  it("edits a buffer as one step", async () => {
+    const result = await fake.harness.behavior.callAgentTool("helix_edit", { path: "util.go", edits: [{ startLine: 4, startCol: 15, endLine: 4, endCol: 18, newText: `"?"` }] }, ctx);
+    expect(textOf(result)).toMatch(/Applied 1 edit to util.go \(version 2, unsaved\)/u);
+  });
+
+  it("returns the command policy's refusal as the reason", async () => {
+    const result = await fake.harness.behavior.callAgentTool("helix_command", { typed: "sh ls" }, ctx);
+    expect(result).toMatchObject({ isError: true });
+    expect(textOf(result)).toBe("unsupported: refused: sh runs a shell (sh runs a shell)");
+    expect(textOf(await fake.harness.behavior.callAgentTool("helix_command", { static: "goto_definition" }, ctx))).toMatch(/Status line: ran goto_definition/u);
+  });
+
+  it("says when no editor serves the thread", async () => {
+    const result = await fake.harness.behavior.callAgentTool("helix_selection", {}, { threadId: "thr_nobody" });
+    expect(result).toMatchObject({ isError: true });
+  });
+});
+
+describe("sends from Helix", () => {
+  it("turns :bb-send into a draft for the thread's composer", async () => {
+    mock.control({ cmd: "select", line: 10, col: 1, endLine: 12, endCol: 1 });
+    mock.control({ cmd: "send", kind: "send", note: "is this safe?" });
+    const drafts = await until(async () => {
+      const { drafts: list } = (await fake.harness.behavior.callRpc("drafts", { threadId: "thr_term" })) as { drafts: { id: string; text: string }[] };
+      return list.length > 0 && list;
+    });
+    expect(drafts[0]!.text).toBe("`main.go:10-11`\n```go\nfunc NewGreeter(name string) *Greeter {\n\treturn &Greeter{name: name}\n```\n\nis this safe?");
+    expect(fake.harness.inspection.realtimeSignals.some((s) => s.channel === "draft")).toBe(true);
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Draft in Thread thr_term");
+    await until(() => manager.pendingSends().length === 0);
+    expect(sent).toEqual([]);
+  });
+
+  it("sends :bb-ask at once with the question first", async () => {
+    mock.control({ cmd: "select", line: 19, col: 2 });
+    mock.control({ cmd: "send", kind: "ask", note: "why bb?" });
+    await until(() => sent.length === 1);
+    expect(sent[0]).toEqual({ threadId: "thr_term", text: 'why bb?\n\n`main.go:19`\n```go\n\tg := NewGreeter("bb")\n```' });
+  });
+
+  it("keeps :bb-comment until :bb-comments-send sends them together", async () => {
+    mock.control({ cmd: "select", line: 6, col: 1, endLine: 9, endCol: 1 });
+    mock.control({ cmd: "send", kind: "comment", note: "rename to Welcomer" });
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 1 pending (:bb-comments-send)");
+    mock.control({ cmd: "select", line: 15, col: 1, endLine: 15, endCol: 10 });
+    mock.control({ cmd: "send", kind: "comment", note: "use a constant" });
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Comment added: 2 pending (:bb-comments-send)");
+    expect(sent).toEqual([]);
+    mock.control({ cmd: "send", kind: "flush" });
+    await until(() => sent.length === 1);
+    expect(sent[0]!.text).toMatch(/^Review comments from Helix \(2\)[\s\S]*1\. `main.go:6-8`[\s\S]*rename to Welcomer[\s\S]*2\. `main.go:15`[\s\S]*use a constant/u);
+    await until(() => mock.control({ cmd: "state" }).status?.message === "Sent 2 comments to Thread thr_term");
+  });
+});
+
+describe("helpers", () => {
+  it("parses locations", () => {
+    expect(parseLocation("a/b.go")).toEqual({ path: "a/b.go" });
+    expect(parseLocation("a/b.go:12")).toEqual({ path: "a/b.go", line: 12 });
+    expect(parseLocation("a/b.go:12:4")).toEqual({ path: "a/b.go", line: 12, col: 4 });
+    expect(parseLocation("a/b.go:12-20")).toEqual({ path: "a/b.go", line: 12, endLine: 20 });
+  });
+
+  it("turns a unified diff into change locations", () => {
+    const diff = [
+      "diff --git a/x.go b/x.go",
+      "--- a/x.go",
+      "+++ b/x.go",
+      "@@ -3,2 +3,4 @@ func a()",
+      "@@ -40 +42,0 @@",
+      "diff --git a/gone.go b/gone.go",
+      "--- a/gone.go",
+      "+++ /dev/null",
+      "@@ -1,3 +0,0 @@",
+    ].join("\n");
+    expect(hunksFromDiff(diff, "/repo/")).toEqual([
+      { path: "/repo/x.go", line: 3, endLine: 6, label: "+4 -2" },
+      { path: "/repo/x.go", line: 42, label: "+0 -1" },
+    ]);
+  });
+
+  it("formats a send as path and lines, fenced code, unsaved note", () => {
+    const block = selectionBlock(
+      { kind: "send", note: "", path: "/w/a.ts", docId: 1, languageId: "typescript", version: 2, modified: true, truncated: false, sendNow: false, ranges: [{ start: { line: 3, col: 1 }, end: { line: 5, col: 1 }, text: "const a = 1;\nconst b = `x`;" }] },
+      ["/w"],
+    );
+    expect(block).toBe("`a.ts:3-4` (unsaved changes in the editor; the file on disk differs)\n```typescript\nconst a = 1;\nconst b = `x`;\n```");
+  });
+});

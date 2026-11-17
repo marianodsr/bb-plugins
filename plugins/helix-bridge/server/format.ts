@@ -42,7 +42,7 @@ export function instanceLine(instance: BoundInstance, threadTitle?: string | nul
   return `${instance.key}  pid ${s.pid}  ${s.workspaceRoot ?? s.cwd ?? "?"}  ${where}  -> ${thread}${status}`;
 }
 
-export function stateText(instance: BoundInstance, threadTitle?: string | null): string {
+export function stateText(instance: BoundInstance, threadTitle?: string | null, signals?: number): string {
   const s = instance.summary;
   const roots = rootsOf(instance);
   const out = [
@@ -60,6 +60,7 @@ export function stateText(instance: BoundInstance, threadTitle?: string | null):
   if (s.lspServers.length) out.push(`language servers: ${s.lspServers.join(", ")}`);
   if (s.externalChanges.length) out.push(`changed on disk while unsaved: ${s.externalChanges.slice(0, 5).map((p) => displayPath(p, roots)).join(", ")}`);
   if (s.overflows) out.push(`event overflows: ${s.overflows} (${s.dropped} dropped, state resynced)`);
+  out.push(`events received: ${s.events}${signals !== undefined ? `, state signals from this machine: ${signals}` : ""}`);
   return out.join("\n");
 }
 
@@ -77,6 +78,8 @@ export function bindingLabel(instance: BoundInstance): string {
 }
 
 export function fence(code: string, languageId: string | null | undefined): string {
+  // A selection that ends at column 1 of the next line carries its newline.
+  code = code.endsWith("\n") ? code.slice(0, -1) : code;
   const longest = Math.max(2, ...[...code.matchAll(/`+/gu)].map((m) => m[0].length));
   const ticks = "`".repeat(longest + 1);
   return `${ticks}${languageId && languageId !== "text" ? languageId : ""}\n${code}\n${ticks}`;
