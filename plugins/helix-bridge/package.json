@@ -13,7 +13,8 @@
       "icon": "Code"
     },
     "server": "./server.ts",
-    "app": "./app.tsx"
+    "app": "./app.tsx",
+    "host": "./host.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.5.0",
