@@ -119,7 +119,8 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
                 interrupt: options.now ? "always" : "whenIdle",
               });
               const where = `${displayPath(result.path, rootsOf(instance))}${location.line ? `:${location.line}` : ""}`;
-              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is typing. Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.viewId ? ` in pane ${result.viewId}` : ""}.` };
+              const stale = result.stale ? "\nThe buffer may be stale: files changed on disk during an agent's turn and reload is not available in this Helix yet (:reload)." : "";
+              return { exitCode: 0, stdout: result.deferred ? `Deferred: the user is typing. Helix shows "bb wants to show ${where} (:bb-go)".` : `Opened ${where}${result.pane ? ` in pane ${result.pane}` : ""}.${stale}` };
             });
           },
         }),
@@ -254,15 +255,13 @@ export function registerCli(bb: BbPluginApi, service: HelixService): void {
               const threadId = options.thread ?? ctx.threadId;
               if (!threadId) fail("which thread? pass --thread", "missing_thread", "bb hx bind --instance <pid> --thread <thr_...>");
               const instance = await target(options.instance, undefined);
-              if (instance.bindingSource === "terminal" && instance.threadId !== threadId)
-                fail(`Helix ${instance.key} runs in the terminal of thread ${instance.threadId} and follows that thread`, "bound_by_terminal", "Start Helix from another terminal to bind it elsewhere");
               const bound = await service.bridge.bind(instance.key, threadId);
               return { exitCode: 0, stdout: instanceLine(bound, await titleOf(bound)) };
             });
           },
         }),
         unbind: cliCommand({
-          summary: "Remove an explicit binding (the instance falls back to its terminal or workspace)",
+          summary: "Remove an explicit binding (the instance falls back to its terminal's thread, or its workspace)",
           options: { instance: instanceOption },
           async run({ options }, ctx) {
             return guard(async () => {

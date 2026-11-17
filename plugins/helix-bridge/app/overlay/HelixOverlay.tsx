@@ -12,38 +12,12 @@ import { usePortalScopeProps } from "@/lib/portal-scope";
 import { prefersReducedMotion } from "../../kit";
 import { startFlight, targets } from "../../kit/handoff/flight";
 import { useHelixRpc } from "../data";
+import { arrivals, commandRequest, composerFocusRequest } from "../stores";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { visibleSurfaces } from "../surface/EditorSurface";
 import { BindDialog } from "../thread/ThreadParts";
 
-// ----- small stores shared with composer banners and commands ---------------
-
-type Listener = () => void;
-function store<T>(initial: T) {
-  let value = initial;
-  const listeners = new Set<Listener>();
-  return {
-    get: () => value,
-    set(next: T) {
-      value = next;
-      for (const l of listeners) l();
-    },
-    subscribe(l: Listener) {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-  };
-}
-
-/** The last draft that arrived from Helix, per thread, for the receipt. */
-export const arrivals = store<ReadonlyMap<string, { summary: string; at: number }>>(new Map());
-/** What the palette asked for; the overlay has the hooks to do it. */
-export const commandRequest = store<{ kind: "open" | "reload" | "bind"; threadId: string; at: number } | null>(null);
-
-export function useArrival(threadId: string | null) {
-  const map = useSyncExternalStore(arrivals.subscribe, arrivals.get);
-  return threadId ? (map.get(threadId) ?? null) : null;
-}
+export { arrivals, commandRequest, composerFocusRequest, useArrival } from "../stores";
 
 // ----- the overlay ---------------------------------------------------------
 
@@ -80,6 +54,20 @@ export function HelixOverlay() {
   }, [request, navigate, rpc]);
 
   useRealtime("draft", () => setNudge((n) => n + 1));
+
+  // After Helix closes, the thread's composer gets focus as soon as it mounts.
+  const focusRequest = useSyncExternalStore(composerFocusRequest.subscribe, composerFocusRequest.get);
+  useEffect(() => {
+    if (!focusRequest) return;
+    if (Date.now() - focusRequest.at > 5000) {
+      composerFocusRequest.set(null);
+      return;
+    }
+    const composer = composers.find((c) => c.scope.kind === "thread" && c.scope.threadId === focusRequest.threadId);
+    if (!composer) return;
+    composerFocusRequest.set(null);
+    window.setTimeout(() => composer.focus(), 50);
+  }, [focusRequest, composers]);
 
   // Thread composers on screen, as a stable key so typing does not refetch.
   const onScreen = [...new Set(composers.flatMap((c) => (c.scope.kind === "thread" ? [c.scope.threadId] : [])))].sort().join(",");

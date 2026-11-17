@@ -10,7 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { useKitMotion } from "../../kit";
 import { useThreadHelix, whereLabel } from "../data";
-import { useArrival } from "../overlay/HelixOverlay";
+import { useArrival } from "../stores";
 
 export const POSITION_PROVIDER = "position";
 const PILL_LABEL = "Helix position";

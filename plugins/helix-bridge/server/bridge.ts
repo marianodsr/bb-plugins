@@ -1,8 +1,8 @@
 // The server's view of every Helix instance on every host, and which bb
 // thread each one belongs to. Host state arrives as coalesced `state` signals
 // and a periodic reconcile; bindings are resolved here:
-//   1. `BB_THREAD_ID` from the registry file (Helix started in a bb terminal);
-//   2. an explicit binding (`bb hx bind`, the app's picker);
+//   1. an explicit binding (`bb hx bind`, the app's picker);
+//   2. `BB_THREAD_ID` from the registry file (Helix started in a bb terminal);
 //   3. the environment on that host whose path contains the workspace root,
 //      then the most recently updated thread in it.
 // Calls go to the instance's own host; no socket is ever opened here.
@@ -194,17 +194,20 @@ export class Bridge {
         const env = summary.workspaceRoot ? await this.environmentFor(hostId, summary.workspaceRoot) : null;
         let threadId: string | null = null;
         let source: BindingSource | null = null;
-        const fromTerminal = summary.env.BB_THREAD_ID;
-        if (fromTerminal && (await this.threadAlive(fromTerminal))) {
-          threadId = fromTerminal;
-          source = "terminal";
-        }
-        if (!threadId && summary.startedAt) {
+        // An explicit binding wins; the terminal's thread is the default.
+        if (summary.startedAt) {
           const explicit = this.deps.store.binding(hostId, summary.pid, summary.startedAt);
           if (explicit && (await this.threadAlive(explicit))) {
             threadId = explicit;
             source = "explicit";
           }
+        }
+        // The thread of the bb terminal Helix runs in: BB_THREAD_ID when it was
+        // set, else the terminal session's own thread.
+        const fromTerminal = summary.env.BB_THREAD_ID ?? (await this.terminalThread(summary.env.BB_TERMINAL_SESSION_ID ?? summary.env.BB_TERMINAL_ID));
+        if (!threadId && fromTerminal && (await this.threadAlive(fromTerminal))) {
+          threadId = fromTerminal;
+          source = "terminal";
         }
         // Test instances (the mock bridge) are never mapped by workspace.
         if (!threadId && env && !summary.test) {
@@ -230,6 +233,22 @@ export class Bridge {
       }
     }
     this.bindings = next;
+  }
+
+  private readonly terminalThreads = new Map<string, string | null>();
+
+  /** The thread a bb terminal session belongs to (cached; sessions do not move). */
+  private async terminalThread(terminalId: string | undefined): Promise<string | null> {
+    if (!terminalId) return null;
+    if (this.terminalThreads.has(terminalId)) return this.terminalThreads.get(terminalId) ?? null;
+    let threadId: string | null = null;
+    try {
+      threadId = (await this.deps.sdk().terminals.get({ terminalId })).threadId ?? null;
+    } catch {
+      threadId = null;
+    }
+    this.terminalThreads.set(terminalId, threadId);
+    return threadId;
   }
 
   private async environments(): Promise<EnvInfo[]> {

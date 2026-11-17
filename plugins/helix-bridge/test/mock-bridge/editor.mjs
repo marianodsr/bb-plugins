@@ -155,7 +155,7 @@ export class Editor {
     }
     const view = this.focused();
     const start = { line, col };
-    const end = endLine ? { line: endLine, col: endCol ?? 1 } : start;
+    const end = endLine ? (endCol ? { line: endLine, col: endCol } : { line: endLine + 1, col: 1 }) : start;
     view.selections = [{ start, end }];
     view.primary = 0;
     view.firstLine = Math.max(1, line - 10);
@@ -198,7 +198,7 @@ export class Editor {
     const view = this.focused();
     const doc = this.docs.get(view.docId);
     const ranges = kind === "flush" ? [] : view.selections.map((range) => ({ ...range, text: this.rangeText(doc, range, true) }));
-    return { kind, note, path: doc.path, docId: doc.docId, languageId: doc.languageId, version: doc.version, modified: doc.modified, ranges, truncated: false, sendNow: sendNow ?? (kind === "ask") };
+    return { kind, note, path: doc.path, docId: doc.docId, languageId: doc.languageId, version: doc.version, modified: doc.modified, ranges, truncated: false, sendNow: sendNow ?? (kind === "ask" || kind === "flush") };
   }
 
   rangeText(doc, { start, end }, wholeLineForCursor = false) {
@@ -255,7 +255,8 @@ export class Editor {
       this.setFocus(view.viewId);
       if (line) {
         const start = { line, col: col ?? 1 };
-        view.selections = [{ start, end: endLine ? { line: endLine, col: endCol ?? 1 } : start }];
+        // endLine without endCol selects through the end of endLine.
+        view.selections = [{ start, end: endLine ? (endCol ? { line: endLine, col: endCol } : { line: endLine + 1, col: 1 }) : start }];
         view.firstLine = Math.max(1, line - 20);
         this.emitSelection();
       }
@@ -364,7 +365,7 @@ export class Editor {
   viewFocus({ viewId, interrupt }) {
     if (!this.views.has(viewId)) throw new BridgeError(ERR.notFound, `no view ${viewId}`);
     const r = this.maybeDefer(interrupt, `pane ${viewId}`, () => (this.setFocus(viewId), {}));
-    return r.deferred ? { deferred: true } : {};
+    return { deferred: r.deferred };
   }
 
   viewClose({ viewId }) {
@@ -392,7 +393,7 @@ export class Editor {
       if (view.viewId === this.focusedView) this.emitSelection();
       return {};
     });
-    return { version: this.docs.get(view.docId).version, ...(r.deferred ? { deferred: true } : {}) };
+    return { version: this.docs.get(view.docId).version, deferred: r.deferred };
   }
 
   command(params, policy) {
@@ -428,7 +429,7 @@ export class Editor {
 
   maybeDeferCommand(interrupt, label, run) {
     const r = this.maybeDefer(interrupt, label, run);
-    return r.deferred ? { deferred: true } : { ...(r.status ? { status: r.status } : {}) };
+    return r.deferred ? { deferred: true } : { deferred: false, ...(r.status ? { status: r.status } : {}) };
   }
 
   typed(name, args) {
@@ -471,9 +472,13 @@ export class Editor {
     const rank = { error: 0, warning: 1, info: 2, hint: 3 };
     const all = [];
     for (const [p, items] of this.diagnostics) if (!path || p === this.abs(path)) all.push(...items);
+    // counts cover everything in scope, before minSeverity, limit and offset.
+    const counts = { errors: 0, warnings: 0, infos: 0, hints: 0 };
+    for (const d of all) counts[{ error: "errors", warning: "warnings", info: "infos", hint: "hints" }[d.severity]] += 1;
     const kept = all.filter((d) => rank[d.severity] <= rank[minSeverity]).sort((a, b) => rank[a.severity] - rank[b.severity] || a.path.localeCompare(b.path) || a.range.start.line - b.range.start.line);
+    if (limit === 0) return { items: [], total: kept.length, truncated: false, counts };
     const n = Math.min(500, Math.max(1, limit));
-    return { items: kept.slice(offset, offset + n), total: kept.length, truncated: offset + n < kept.length };
+    return { items: kept.slice(offset, offset + n), total: kept.length, truncated: offset + n < kept.length, counts };
   }
 
   lspServers() {

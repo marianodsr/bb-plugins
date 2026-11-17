@@ -70,7 +70,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         line: line.optional(),
         col: col.optional(),
         endLine: line.optional().describe("Select through this line"),
-        endCol: col.optional(),
+        endCol: col.optional().describe("End column, exclusive; omit to select through the end of endLine"),
         split: z.enum(["none", "horizontal", "vertical"]).optional().describe("Open in a new split"),
         pane: z.number().int().min(1).optional().describe("Open in this pane (see helix_panes)"),
         note: z.string().max(200).optional().describe("One line shown on the status line, e.g. why this place matters"),
@@ -83,7 +83,9 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
           path: args.path,
           ...(args.line !== undefined ? { line: args.line } : {}),
           ...(args.col !== undefined ? { col: args.col } : {}),
-          ...(args.endLine !== undefined ? { endLine: args.endLine, endCol: args.endCol ?? 1 } : {}),
+          // Without endCol, Helix selects through the end of endLine.
+          ...(args.endLine !== undefined ? { endLine: args.endLine } : {}),
+          ...(args.endLine !== undefined && args.endCol !== undefined ? { endCol: args.endCol } : {}),
           ...(args.split ? { split: args.split } : {}),
           ...(args.pane !== undefined ? { pane: args.pane } : {}),
           ...(args.note ? { note: args.note } : {}),
@@ -92,7 +94,7 @@ export function registerTools(bb: BbPluginApi, service: HelixService): void {
         const where = `${displayPath(result.path, rootsOf(instance))}${args.line ? `:${args.line}${args.endLine ? `-${args.endLine}` : ""}` : ""}`;
         return result.deferred
           ? `Deferred: the user is typing. Helix shows "bb wants to show ${where} (:bb-go)"; tell them to run :bb-go when ready.`
-          : `The user is now at ${where}${result.viewId ? ` (pane ${result.viewId})` : ""}.`;
+          : `The user is now at ${where}${result.pane ? ` (pane ${result.pane})` : ""}.${result.stale ? " The buffer may be stale: files changed on disk during this turn and reload is not available in this Helix yet; tell the user to run :reload if it looks out of date." : ""}`;
       })(threadId),
   });
 

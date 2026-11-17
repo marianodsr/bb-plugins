@@ -9,6 +9,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { EmptyState, StatusDot, ThreadChip } from "../../kit";
 import { useInstances, useThreadHelix, whereLabel } from "../data";
+import { composerFocusRequest } from "../stores";
 import { EditorSurface } from "../surface/EditorSurface";
 
 export const EDITOR_PANEL = "editor";
@@ -22,9 +23,15 @@ export function threadFromSubPath(subPath: string): string | null {
 
 export function EditorPage({ subPath }: { subPath: string }) {
   const threadId = threadFromSubPath(subPath);
+  const navigate = useBbNavigate();
   if (!threadId) return <PickThread />;
+  // Helix closed: back to the thread, with its composer focused.
+  const onClosed = () => {
+    composerFocusRequest.set({ threadId, at: Date.now() });
+    navigate.toThread(threadId);
+  };
   // Keyed so switching threads mounts a fresh session.
-  return <EditorSurface key={threadId} threadId={threadId} active autoFocus />;
+  return <EditorSurface key={threadId} threadId={threadId} active autoFocus onClosed={onClosed} />;
 }
 
 /** The page header: which thread, where Helix is, and a switcher. */

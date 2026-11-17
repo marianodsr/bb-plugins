@@ -33,7 +33,27 @@ export interface ServiceDeps {
 
 const LSP_DEFAULT_TIMEOUT_MS = 10_000;
 
+/** The capability each agent tool needs from `bridge/hello`. */
+export const TOOL_CAPABILITY = {
+  helix_selection: "editor",
+  helix_show: "editor",
+  helix_tour: "locations",
+  helix_panes: "views",
+  helix_diagnostics: "diagnostics",
+  helix_query: "lsp",
+  helix_edit: "applyEdits",
+  helix_command: "command",
+} as const satisfies Record<string, Capability>;
+
 export class HelixService {
+  /**
+   * Pane numbers for people and agents. Helix's view ids are large (often
+   * above 2^32); each instance's panes get 1, 2, 3, ... in the order first
+   * seen, kept for the life of the instance. Raw ids stay internal.
+   */
+  private readonly paneNumbers = new Map<string, Map<number, number>>();
+  /** When an agent's turn last changed files in an environment. */
+  private readonly agentEdits = new Map<string, number>();
   private readonly threadEnv = new Map<string, { at: number; environmentId: string | null; hostId: string | null; path: string | null; title: string | null }>();
 
   constructor(private readonly deps: ServiceDeps) {}
@@ -75,15 +95,69 @@ export class HelixService {
     return [...bound.sort((a, b) => rank(a) - rank(b) || b.summary.updatedAt - a.summary.updatedAt), ...inEnv.sort((a, b) => rank(a) - rank(b))];
   }
 
-  /** Synchronous check for agents.configure: is an instance bound to this thread or its environment? */
-  servesThreadSync(threadId: string, environment: { id: string; path: string | null } | null, hostId: string | null): boolean {
-    return this.bridge.list().some(
+  /**
+   * The tools to offer a thread: those whose capability some connected Helix
+   * serving it offers. Synchronous, for agents.configure.
+   */
+  toolsForThreadSync(threadId: string, environment: { id: string; path: string | null } | null, hostId: string | null): string[] {
+    const caps = new Set<string>();
+    for (const i of this.servingSync(threadId, environment, hostId)) for (const c of i.summary.capabilities) caps.add(c);
+    return Object.entries(TOOL_CAPABILITY).flatMap(([tool, cap]) => (caps.has(cap) ? [tool] : []));
+  }
+
+  private servingSync(threadId: string, environment: { id: string; path: string | null } | null, hostId: string | null): BoundInstance[] {
+    return this.bridge.list().filter(
       (i) =>
         i.summary.status === "connected" &&
         (i.threadId === threadId ||
           (!i.summary.test && environment !== null && i.environmentId === environment.id) ||
           (!i.summary.test && environment?.path && hostId === i.hostId && i.summary.workspaceRoot && within(environment.path, i.summary.workspaceRoot))),
     );
+  }
+
+  /** Synchronous check for agents.configure: is an instance bound to this thread or its environment? */
+  servesThreadSync(threadId: string, environment: { id: string; path: string | null } | null, hostId: string | null): boolean {
+    return this.servingSync(threadId, environment, hostId).length > 0;
+  }
+
+  // ----- pane numbers -------------------------------------------------------
+
+  paneNumber(instance: BoundInstance, viewId: number): number {
+    let numbers = this.paneNumbers.get(instance.key);
+    if (!numbers) this.paneNumbers.set(instance.key, (numbers = new Map()));
+    let n = numbers.get(viewId);
+    if (n === undefined) {
+      n = Math.max(0, ...numbers.values()) + 1;
+      numbers.set(viewId, n);
+    }
+    return n;
+  }
+
+  /** The view id behind a pane number; reads the panes once if it is not known yet. */
+  async paneViewId(instance: BoundInstance, pane: number): Promise<number> {
+    const find = () => [...(this.paneNumbers.get(instance.key) ?? new Map<number, number>())].find(([, n]) => n === pane)?.[0];
+    let viewId = find();
+    if (viewId === undefined && instance.summary.capabilities.includes("views")) {
+      await this.panes(instance);
+      viewId = find();
+    }
+    if (viewId === undefined) throw new BridgeFailure("not_found", `no pane ${pane}${instance.summary.capabilities.includes("views") ? " (helix_panes lists them)" : ""}`);
+    return viewId;
+  }
+
+  // ----- agent edits ----------------------------------------------------------
+
+  /** Files changed in an environment during an agent's turn. */
+  noteAgentEdit(environmentId: string): void {
+    this.agentEdits.set(environmentId, Date.now());
+  }
+
+  /** Without `reload`, buffers open before an agent edit may show old text. */
+  mayBeStale(instance: BoundInstance): boolean {
+    if (instance.summary.capabilities.includes("reload") || !instance.environmentId) return false;
+    const edited = this.agentEdits.get(instance.environmentId);
+    const started = instance.summary.startedAt ? Date.parse(instance.summary.startedAt) : 0;
+    return edited !== undefined && edited > started;
   }
 
   /** Pick the instance a request means. */
@@ -157,9 +231,10 @@ export class HelixService {
     return this.call(instance, "lsp/query", params, timeoutMs + 1000);
   }
 
-  async panes(instance: BoundInstance): Promise<{ views: ViewInfo[]; layout: LayoutNode | null }> {
+  async panes(instance: BoundInstance): Promise<{ views: (ViewInfo & { pane: number })[]; layout: LayoutNode | null }> {
     this.requireCapability(instance, "views");
-    return this.call(instance, "view/list");
+    const result = await this.call<{ views: ViewInfo[]; layout: LayoutNode | null }>(instance, "view/list");
+    return { views: result.views.map((v) => ({ ...v, pane: this.paneNumber(instance, v.viewId) })), layout: result.layout };
   }
 
   // ----- the agent drives the editor ------------------------------------------
@@ -168,15 +243,15 @@ export class HelixService {
   async show(
     instance: BoundInstance,
     options: { path: string; line?: number; col?: number; endLine?: number; endCol?: number; split?: "none" | "horizontal" | "vertical"; pane?: number; note?: string; interrupt?: "whenIdle" | "always"; focus?: boolean },
-  ): Promise<OpenResult> {
+  ): Promise<OpenResult & { pane: number | null; stale: boolean }> {
     this.requireCapability(instance, "editor");
     const params: Record<string, unknown> = { path: this.absolute(instance, options.path), focus: options.focus ?? true };
     for (const key of ["line", "col", "endLine", "endCol", "note", "interrupt"] as const) if (options[key] !== undefined) params[key] = options[key];
     if (options.split && options.split !== "none") params.split = options.split;
-    if (options.pane !== undefined) params.viewId = options.pane;
+    if (options.pane !== undefined) params.viewId = await this.paneViewId(instance, options.pane);
     const result = await this.call<OpenResult>(instance, "editor/open", params);
     if (instance.threadId && params.focus !== false) this.deps.reveal(instance.threadId);
-    return result;
+    return { ...result, pane: typeof result.viewId === "number" ? this.paneNumber(instance, result.viewId) : null, stale: this.mayBeStale(instance) };
   }
 
   async tour(instance: BoundInstance, options: { title: string; list?: string; items: LocationItem[]; start?: number; interrupt?: "whenIdle" | "always" }): Promise<{ count: number; deferred?: boolean }> {
@@ -196,19 +271,19 @@ export class HelixService {
 
   async focusPane(instance: BoundInstance, pane: number, interrupt?: "whenIdle" | "always"): Promise<{ deferred?: boolean }> {
     this.requireCapability(instance, "views");
-    return this.call(instance, "view/focus", { viewId: pane, ...(interrupt ? { interrupt } : {}) });
+    return this.call(instance, "view/focus", { viewId: await this.paneViewId(instance, pane), ...(interrupt ? { interrupt } : {}) });
   }
 
   async closePane(instance: BoundInstance, pane: number): Promise<void> {
     this.requireCapability(instance, "views");
-    await this.call(instance, "view/close", { viewId: pane });
+    await this.call(instance, "view/close", { viewId: await this.paneViewId(instance, pane) });
   }
 
   async select(instance: BoundInstance, options: { pane?: number; ranges: Range[]; primary?: number; interrupt?: "whenIdle" | "always" }): Promise<{ version: number; deferred?: boolean }> {
     this.requireCapability(instance, "views");
     return this.call(instance, "editor/select", {
       ranges: options.ranges,
-      ...(options.pane !== undefined ? { viewId: options.pane } : {}),
+      ...(options.pane !== undefined ? { viewId: await this.paneViewId(instance, options.pane) } : {}),
       ...(options.primary !== undefined ? { primary: options.primary } : {}),
       ...(options.interrupt ? { interrupt: options.interrupt } : {}),
     });

@@ -307,6 +307,13 @@ export class InstanceManager {
   private async refreshDiagnostics(instance: Instance): Promise<void> {
     const connection = instance.connection;
     if (!connection) return;
+    // `limit: 0` returns only the counts for everything in scope.
+    const result = (await connection.request("diagnostics/get", { limit: 0 }, EDITOR_TIMEOUT_MS)) as { total: number; counts?: { errors: number; warnings: number } };
+    if (result.counts) {
+      instance.summary.diagnostics = { errors: result.counts.errors ?? 0, warnings: result.counts.warnings ?? 0 };
+      return;
+    }
+    // An editor without `counts`: two totals by minimum severity.
     const errors = (await connection.request("diagnostics/get", { minSeverity: "error", limit: 1 }, EDITOR_TIMEOUT_MS)) as { total: number };
     const both = (await connection.request("diagnostics/get", { minSeverity: "warning", limit: 1 }, EDITOR_TIMEOUT_MS)) as { total: number };
     instance.summary.diagnostics = { errors: errors.total ?? 0, warnings: Math.max(0, (both.total ?? 0) - (errors.total ?? 0)) };
@@ -505,7 +512,7 @@ export function readRegistry(path: string): RegistryFile | null {
 
 function emptySummary(id: string, registry: RegistryFile): InstanceSummary {
   const env: Record<string, string> = {};
-  for (const key of ["BB_THREAD_ID", "BB_ENVIRONMENT_ID", "BB_PROJECT_ID", "BB_TERMINAL_ID"] as const) {
+  for (const key of ["BB_THREAD_ID", "BB_ENVIRONMENT_ID", "BB_PROJECT_ID", "BB_TERMINAL_ID", "BB_TERMINAL_SESSION_ID"] as const) {
     const value = registry.env?.[key];
     if (typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/u.test(value)) env[key] = value;
   }

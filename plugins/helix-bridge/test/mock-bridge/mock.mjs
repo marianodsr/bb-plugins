@@ -41,7 +41,14 @@ export async function startMockBridge(options) {
   const pid = options.pid ?? process.pid;
   const dir = options.dir;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const socketPath = join(dir, `${pid}.sock`);
+  // macOS caps socket paths at 104 bytes: past 100, Helix moves the socket to
+  // /tmp/helix-bridge-<uid>/; the registry's `socket` field is authoritative.
+  let socketPath = join(dir, `${pid}.sock`);
+  if (Buffer.byteLength(socketPath) > 100) {
+    const fallback = join("/tmp", `helix-bridge-${process.getuid?.() ?? 0}`);
+    mkdirSync(fallback, { recursive: true, mode: 0o700 });
+    socketPath = join(fallback, `${pid}.sock`);
+  }
   const registryPath = join(dir, `${pid}.json`);
   if (existsSync(socketPath)) unlinkSync(socketPath);
   const capabilities = options.capabilities ?? ALL_CAPABILITIES;
@@ -193,9 +200,11 @@ export async function startMockBridge(options) {
       case "events/subscribe":
       case "events/unsubscribe": {
         if (!Array.isArray(params.events)) throw new BridgeError(ERR.invalidParams, "events must be an array", { field: "events" });
-        const kinds = params.events.filter((e) => EVENT_KINDS.includes(e));
+        const unknown = params.events.find((e) => !EVENT_KINDS.includes(e));
+        if (unknown !== undefined) throw new BridgeError(ERR.invalidParams, `unknown event kind ${unknown}`, { field: "events" });
+        const kinds = params.events;
         for (const kind of kinds) method === "events/subscribe" ? client.subs.add(kind) : client.subs.delete(kind);
-        return { subscribed: [...client.subs] };
+        return { subscribed: EVENT_KINDS.filter((k) => client.subs.has(k)) };
       }
       case "editor/state":
         need("editor");

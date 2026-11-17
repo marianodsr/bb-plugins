@@ -274,7 +274,9 @@ describe("editor terminal", () => {
     expect(a).toEqual({ terminalId: "term_1", created: true });
     expect(b).toEqual(a);
     expect(again).toEqual({ terminalId: "term_1", created: false });
-    expect(created[0]).toMatchObject({ scope: { kind: "thread", threadId: "thr_term" }, title: "Helix", start: { mode: "command", command: "hxb" } });
+    expect(created[0]).toMatchObject({ scope: { kind: "thread", threadId: "thr_term" }, title: "Helix", start: { mode: "command" } });
+    // bb's terminals do not set BB_THREAD_ID; the session carries it so Helix records it.
+    expect((created[0] as { start: { command: string } }).start.command).toMatch(/^BB_THREAD_ID=thr_term BB_ENVIRONMENT_ID=env_test BB_PROJECT_ID=\S+ exec hxb$/u);
   });
 });
 

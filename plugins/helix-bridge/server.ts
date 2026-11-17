@@ -239,7 +239,13 @@ export default async function plugin(bb: BbPluginApi) {
         const existing = sessions.find((t) => t.title === TERMINAL_TITLE && (t.status === "running" || t.status === "starting"));
         if (existing) return { terminalId: existing.id, created: false };
         const { hxbPath } = await settings.get();
-        const created = await bb.sdk.terminals.create({ scope: { kind: "thread", threadId }, title: TERMINAL_TITLE, cols: 160, rows: 48, start: { mode: "command", command: shellQuote(hxbPath.trim() || "hxb") } });
+        // bb's terminals do not export BB_THREAD_ID and friends, which Helix
+        // records in its registry file to say which thread it belongs to; set
+        // them for the session we start.
+        const thread = await bb.sdk.threads.get({ threadId });
+        const vars = [`BB_THREAD_ID=${threadId}`, ...(thread.environmentId ? [`BB_ENVIRONMENT_ID=${thread.environmentId}`] : []), ...(thread.projectId ? [`BB_PROJECT_ID=${thread.projectId}`] : [])];
+        const command = `${vars.map(shellQuote).join(" ")} exec ${shellQuote(hxbPath.trim() || "hxb")}`;
+        const created = await bb.sdk.terminals.create({ scope: { kind: "thread", threadId }, title: TERMINAL_TITLE, cols: 160, rows: 48, start: { mode: "command", command } });
         return { terminalId: created.id, created: true };
       })().finally(() => openingTerminals.delete(threadId));
       openingTerminals.set(threadId, work);
@@ -288,8 +294,9 @@ export default async function plugin(bb: BbPluginApi) {
   // session's tool list when the session starts, so a thread that started
   // before Helix connected gets them on its next session.
   bb.agents.configure((context) => {
-    const serves = service.servesThreadSync(context.thread.id, { id: context.environment.id, path: context.environment.path }, context.host.id);
-    return serves ? { tools: [...TOOL_NAMES], skills: [SKILL_NAME], instructions: INSTRUCTIONS } : { tools: [], skills: [SKILL_NAME] };
+    // Only the tools whose capability the connected Helix offers (bridge/hello).
+    const tools = service.toolsForThreadSync(context.thread.id, { id: context.environment.id, path: context.environment.path }, context.host.id);
+    return tools.length > 0 ? { tools, skills: [SKILL_NAME], instructions: INSTRUCTIONS } : { tools: [], skills: [SKILL_NAME] };
   });
 
   // ----- background ------------------------------------------------------------
@@ -319,7 +326,10 @@ export default async function plugin(bb: BbPluginApi) {
           const environmentId = event.id;
           if (!environmentId) return;
           const changes = new Set(event.changes);
-          if (changes.has("work-status-changed")) follower.onEnvironmentChanged(environmentId);
+          if (changes.has("work-status-changed")) {
+            if ((activeByEnvironment.get(environmentId)?.size ?? 0) > 0) service.noteAgentEdit(environmentId);
+            follower.onEnvironmentChanged(environmentId);
+          }
           if (changes.has("environment-deleted") || changes.has("metadata-changed")) bridge.forgetEnvironments();
         },
       });
@@ -329,11 +339,23 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // Which environments have a turn running, so file changes there count as agent edits.
+  const activeByEnvironment = new Map<string, Set<string>>();
+  const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
+    if (!environmentId) return;
+    const set = activeByEnvironment.get(environmentId) ?? new Set<string>();
+    if (active) set.add(threadId);
+    else set.delete(threadId);
+    activeByEnvironment.set(environmentId, set);
+  };
+  bb.events.on("thread.failed", ({ thread }) => setActive(thread.id, thread.environmentId ?? null, false));
   bb.events.on("thread.active", ({ thread }) => {
+    setActive(thread.id, thread.environmentId ?? null, true);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     void follower.onTurnStart(thread.id, thread.environmentId ?? null);
   });
   bb.events.on("thread.idle", ({ thread }) => {
+    setActive(thread.id, thread.environmentId ?? null, false);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     void follower.onTurnEnd(thread.id, thread.environmentId ?? null);
   });
@@ -346,5 +368,5 @@ export default async function plugin(bb: BbPluginApi) {
 }
 
 function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_./~-]+$/u.test(value) ? value : `'${value.replace(/'/gu, `'\\''`)}'`;
+  return /^[A-Za-z0-9_./~=-]+$/u.test(value) ? value : `'${value.replace(/'/gu, `'\\''`)}'`;
 }

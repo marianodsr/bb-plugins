@@ -135,9 +135,10 @@ export function diagnosticsText(items: Diagnostic[], total: number, roots: strin
   return [...shown, ...more(total, items.length, "pass offset to page, or path to narrow")].join("\n");
 }
 
-export function panesText(views: ViewInfo[], layout: LayoutNode | null, roots: string[]): string {
-  const lines = views.map((v) => `${v.focused ? "*" : " "} pane ${v.viewId}  ${displayPath(v.path, roots)}  lines ${v.firstLine}-${v.lastLine}`);
-  const describe = (node: LayoutNode): string => ("viewId" in node ? `${node.viewId}` : `${node.split}(${node.children.map(describe).join(", ")})`);
+export function panesText(views: (ViewInfo & { pane: number })[], layout: LayoutNode | null, roots: string[]): string {
+  const numbers = new Map(views.map((v) => [v.viewId, v.pane]));
+  const lines = views.map((v) => `${v.focused ? "*" : " "} pane ${v.pane}  ${displayPath(v.path, roots)}  lines ${v.firstLine}-${v.lastLine}`);
+  const describe = (node: LayoutNode): string => ("viewId" in node ? `${numbers.get(node.viewId) ?? "?"}` : `${node.split}(${node.children.map(describe).join(", ")})`);
   if (layout) lines.push(`layout: ${describe(layout)}`);
   return lines.join("\n");
 }

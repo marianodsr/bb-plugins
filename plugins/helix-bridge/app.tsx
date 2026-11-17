@@ -10,7 +10,8 @@ import {
   experimental_THREAD_INFO_ROW_GROUPS as ROW_GROUPS,
 } from "@get-bb/plugin-sdk/app";
 import { FromHelixReceipt, PositionChip } from "./app/composer/ComposerParts";
-import { HelixOverlay, commandRequest } from "./app/overlay/HelixOverlay";
+import { HelixOverlay } from "./app/overlay/HelixOverlay";
+import { commandRequest } from "./app/stores";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
 import { visibleSurfaces } from "./app/surface/EditorSurface";
 import { HelixSegment, HelixStatusRow, HelixTab, useHelixSegmentVisible } from "./app/thread/ThreadParts";

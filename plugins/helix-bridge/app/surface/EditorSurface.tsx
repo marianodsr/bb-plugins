@@ -12,7 +12,44 @@ import { useGhostty, useHelixRpc, useSetup } from "../data";
 import { HudMeter, type HudSnapshot } from "../terminal/hud";
 import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
 import { createRenderer, type TerminalRenderer } from "../terminal/renderer";
-import { TerminalStream } from "../terminal/stream";
+import { TerminalStream, exitOutcome } from "../terminal/stream";
+
+/** The last few KB a session printed, for the exit report. */
+class OutputTail {
+  private chunks: Uint8Array[] = [];
+  private size = 0;
+  push(bytes: Uint8Array): void {
+    this.chunks.push(bytes);
+    this.size += bytes.length;
+    while (this.size > 16_384 && this.chunks.length > 1) this.size -= this.chunks.shift()!.length;
+  }
+  text(): string {
+    return new TextDecoder().decode(concat(this.chunks));
+  }
+}
+
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** The last lines a terminal printed, without escape sequences. */
+export function lastLines(text: string, count = 12): string {
+  // eslint-disable-next-line no-control-regex
+  const plain = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-_]|\r/gu, "");
+  return plain
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l, i, all) => l.length > 0 || i < all.length - 1)
+    .slice(-count)
+    .join("\n")
+    .trim();
+}
 
 const WASM_URL = "/api/v1/plugins/helix-bridge/http/wterm-ghostty.wasm";
 const FALLBACK_FONTS = '"Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace';
@@ -20,7 +57,20 @@ const FALLBACK_FONTS = '"Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, 
 /** Visible surfaces by thread, so a draft's arrival can fly from the editor. */
 export const visibleSurfaces = new Map<string, HTMLElement>();
 
-export function EditorSurface({ threadId, active, autoFocus, className }: { threadId: string; active: boolean; autoFocus?: boolean; className?: string }) {
+export interface EditorSurfaceProps {
+  threadId: string;
+  active: boolean;
+  autoFocus?: boolean;
+  className?: string;
+  /**
+   * Helix exited cleanly or bb closed its terminal: the session is already
+   * closed; the caller takes the surface away (back to the thread, or close
+   * the tab).
+   */
+  onClosed(): void;
+}
+
+export function EditorSurface({ threadId, active, autoFocus, className, onClosed }: EditorSurfaceProps) {
   const setup = useSetup();
   const ghostty = useGhostty();
   const binaryMissing = setup.data?.checks.find((c) => c.id === "binary" && c.level === "error") ?? null;
@@ -31,7 +81,7 @@ export function EditorSurface({ threadId, active, autoFocus, className }: { thre
     if (ghostty.error) return <SurfaceError message={`Could not read the editor settings: ${ghostty.error}`} onRetry={ghostty.refetch} className={className} />;
     return <SurfaceSkeleton className={className} />;
   }
-  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} config={ghostty.data} className={className} />;
+  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} config={ghostty.data} className={className} onClosed={onClosed} />;
 }
 
 function Session({
@@ -40,7 +90,9 @@ function Session({
   autoFocus,
   config,
   className,
+  onClosed,
 }: {
+  onClosed(): void;
   threadId: string;
   active: boolean;
   autoFocus: boolean;
@@ -53,6 +105,9 @@ function Session({
   const [terminalId, setTerminalId] = useState<string | null>(null);
   const [state, setState] = useState<"starting" | "connecting" | "open" | "closed" | "exited" | "failed">("starting");
   const [failure, setFailure] = useState<string | null>(null);
+  const [exit, setExit] = useState<{ code: number | null; lastLines: string } | null>(null);
+  const onClosedRef = useRef(onClosed);
+  onClosedRef.current = onClosed;
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [restart, setRestart] = useState(0);
   const activeRef = useRef(active);
@@ -83,26 +138,50 @@ function Session({
     let disposed = false;
     let renderer: TerminalRenderer | null = null;
     const meter = config.hud ? new HudMeter() : null;
+    const tail = new OutputTail();
     const owns = () => activeRef.current && element.contains(document.activeElement);
     const stream = new TerminalStream(terminalId, {
       onChunk: (chunk) => {
         renderer?.write(chunk.bytes);
+        tail.push(chunk.bytes);
         meter?.output();
       },
       onState: (next) => {
         if (disposed) return;
-        setState(next);
-        if (next === "closed")
-          void sdk.terminals.get({ terminalId }).then(
-            (t) => !disposed && t.status === "exited" && setState("exited"),
-            () => {},
-          );
+        if (next !== "closed") setState((current) => (current === "exited" ? current : next));
+      },
+      // The stream says at once when the process ends (also on attach, when
+      // it ended while no surface was open).
+      onSession: (session) => {
+        if (disposed) return;
+        // bb reports exit code 0 for a process killed by a signal; a Rust panic
+        // left on screen still means a crash.
+        const outcome = exitOutcome(session) === "close" && /panicked at /u.test(tail.text()) ? "report" : exitOutcome(session);
+        if (!outcome) return;
+        disposed = true;
+        stream.close();
+        if (outcome === "close") {
+          void sdk.terminals.close({ terminalId, mode: "force" }).catch(() => {});
+          onClosedRef.current();
+          return;
+        }
+        setState("exited");
+        // What is left on the terminal's screen once Helix has left its
+        // alternate screen: a panic message lands there. Raw output is screen
+        // painting, not lines, so it is only the fallback.
+        const screen = renderer ? renderer.term.readText().catch(() => "") : Promise.resolve("");
+        void screen.then((text) => {
+          setExit({ code: session.exitCode, lastLines: lastLines(text || tail.text()) });
+          void sdk.terminals.close({ terminalId, mode: "force" }).catch(() => {});
+        });
       },
     });
+    // On focus, claim the session's size again: bb's own terminal tab for the
+    // same session may have resized it while it was shown.
     const claim = () => {
       if (!renderer) return;
       const { cols, rows } = renderer.size();
-      stream.resize(cols, rows);
+      stream.resize(cols, rows, true);
     };
     const onFocusIn = () => claim();
     element.addEventListener("focusin", onFocusIn);
@@ -191,15 +270,40 @@ function Session({
   return (
     <div className={cn("relative flex min-h-0 flex-1 flex-col bg-background", className)} data-helix-surface={threadId}>
       <div ref={host} className="helix-surface min-h-0 flex-1 overflow-hidden" data-helix-terminal />
-      {state === "exited" || state === "failed" ? (
+      {state === "exited" ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-background p-6" data-helix-exit>
+          <div className="flex w-full max-w-xl flex-col gap-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-medium">Helix exited{exit?.code !== null && exit?.code !== undefined ? ` with code ${exit.code}` : " unexpectedly"}</h2>
+              <p className="text-sm leading-6 text-muted-foreground">The last lines it printed:</p>
+            </div>
+            <pre className="max-h-64 overflow-auto rounded-lg border border-border/60 bg-muted px-3 py-2.5 font-mono text-xs leading-5 text-foreground">{exit?.lastLines || "(nothing)"}</pre>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setExit(null);
+                  setTerminalId(null);
+                  setRestart((n) => n + 1);
+                }}
+              >
+                Reopen
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => onClosedRef.current()}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : state === "failed" ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/90">
           <EmptyState
             icon="Code"
-            title={state === "exited" ? "Helix has exited" : "Helix could not start"}
-            description={state === "exited" ? "Start it again in this thread's workspace." : (failure ?? "The terminal session failed.")}
+            title="Helix could not start"
+            description={failure ?? "The terminal session failed."}
             action={
               <Button size="sm" onClick={() => setRestart((n) => n + 1)}>
-                Start Helix
+                Try again
               </Button>
             }
           />

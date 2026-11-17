@@ -10,7 +10,38 @@ export interface TerminalChunk {
   bytes: Uint8Array;
 }
 
-type ServerMessage = { type: "attached"; nextSeq: number } | { type: "output"; seq: number; dataBase64: string };
+/** The session facts the stream reports: on attach, and when the process ends. */
+export interface TerminalSessionInfo {
+  status: string;
+  exitCode: number | null;
+  closeReason: string | null;
+}
+
+type ServerMessage =
+  | { type: "attached"; nextSeq: number; session: TerminalSessionInfo | null }
+  | { type: "output"; seq: number; dataBase64: string }
+  | { type: "exited"; session: TerminalSessionInfo };
+
+function sessionOf(value: unknown): TerminalSessionInfo | null {
+  if (typeof value !== "object" || value === null) return null;
+  const s = value as Record<string, unknown>;
+  return {
+    status: typeof s.status === "string" ? s.status : "unknown",
+    exitCode: typeof s.exitCode === "number" ? s.exitCode : null,
+    closeReason: typeof s.closeReason === "string" ? s.closeReason : null,
+  };
+}
+
+/**
+ * What the surface does when the session ends: `close` for a clean exit or
+ * a close from bb's side, `report` for a non-zero exit or a crash, null while
+ * it runs.
+ */
+export function exitOutcome(session: TerminalSessionInfo | null): "close" | "report" | null {
+  if (!session || (session.status !== "exited" && session.status !== "closed")) return null;
+  if (session.closeReason === "user" || session.exitCode === 0) return "close";
+  return "report";
+}
 
 function parse(raw: unknown): ServerMessage | null {
   if (typeof raw !== "string") return null;
@@ -23,7 +54,11 @@ function parse(raw: unknown): ServerMessage | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   if (record.type === "attached" && Number.isSafeInteger(record.nextSeq)) {
-    return { type: "attached", nextSeq: Number(record.nextSeq) };
+    return { type: "attached", nextSeq: Number(record.nextSeq), session: sessionOf(record.session) };
+  }
+  if (record.type === "exited") {
+    const session = sessionOf(record.session);
+    if (session) return { type: "exited", session };
   }
   const chunk = record.chunk as Record<string, unknown> | undefined;
   if (record.type === "output" && chunk && Number.isSafeInteger(chunk.seq) && typeof chunk.dataBase64 === "string") {
@@ -54,6 +89,8 @@ const encoder = new TextEncoder();
 export interface TerminalStreamEvents {
   onChunk(chunk: TerminalChunk): void;
   onState?(state: "connecting" | "open" | "closed"): void;
+  /** The session as the server reports it, on attach and on exit. */
+  onSession?(session: TerminalSessionInfo): void;
 }
 
 export class TerminalStream {
@@ -103,7 +140,12 @@ export class TerminalStream {
   private receive(raw: unknown): void {
     const message = parse(raw);
     if (!message) return;
+    if (message.type === "exited") {
+      this.events.onSession?.(message.session);
+      return;
+    }
     if (message.type === "attached") {
+      if (message.session) this.events.onSession?.(message.session);
       this.nextSeq = message.nextSeq;
       const held = this.held.splice(0).sort((a, b) => a.seq - b.seq);
       for (const chunk of held) this.deliver(chunk);
@@ -135,9 +177,10 @@ export class TerminalStream {
     if (bytes.length > 0) this.send(JSON.stringify({ type: "input", dataBase64: encodeBase64(bytes) }));
   }
 
-  resize(cols: number, rows: number): void {
+  /** `force` re-sends an unchanged size (another view of the session may have changed it). */
+  resize(cols: number, rows: number, force = false): void {
     if (!Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) return;
-    if (this.size && this.size.cols === cols && this.size.rows === rows) return;
+    if (!force && this.size && this.size.cols === cols && this.size.rows === rows) return;
     this.size = { cols, rows };
     this.send(JSON.stringify({ type: "resize", cols, rows }));
   }

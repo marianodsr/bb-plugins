@@ -5,6 +5,8 @@ import {
   experimental_ThreadContextCardRow as ThreadContextCardRow,
   experimental_useTabVisible as useTabVisible,
   experimental_useThreadContextKind as useThreadContextKind,
+  experimental_useAppPanel as useAppPanel,
+  experimental_usePanelTabs as usePanelTabs,
   useBbNavigate,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
@@ -13,12 +15,22 @@ import { Icon } from "@/components/ui/icon";
 import { EmptyState, StatusDot } from "../../kit";
 import { useHelixRpc, useInstances, useThreadHelix, whereLabel } from "../data";
 import { EDITOR_PANEL } from "../pages/EditorPage";
+import { composerFocusRequest } from "../stores";
 import { EditorSurface } from "../surface/EditorSurface";
 
 /** The thread's Helix tab: the same session, for a quick look. */
 export function HelixTab({ threadId }: { threadId: string }) {
   const visible = useTabVisible();
   const navigate = useBbNavigate();
+  const panel = useAppPanel();
+  const tabs = usePanelTabs();
+  // Helix closed: close this tab (bb shows the panel's previous tab, or
+  // closes the panel when this was its only one) and focus the composer.
+  const onClosed = () => {
+    const mine = tabs.tabs.find((t) => t.detail.kind === "plugin" && t.detail.pluginId === "helix-bridge" && t.detail.tab.id === "helix");
+    if (mine) panel.closeTab(mine.key);
+    composerFocusRequest.set({ threadId, at: Date.now() });
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-end gap-2 border-b border-border/60 px-2">
@@ -27,7 +39,7 @@ export function HelixTab({ threadId }: { threadId: string }) {
           Open full editor
         </Button>
       </div>
-      <EditorSurface threadId={threadId} active={visible} />
+      <EditorSurface threadId={threadId} active={visible} onClosed={onClosed} />
     </div>
   );
 }
@@ -61,11 +73,9 @@ export function HelixStatusRow({ threadId }: { threadId: string }) {
         title={`Helix pid ${instance.pid}, ${instance.bindingSource ? BINDING[instance.bindingSource] : "not bound"}${instance.commandPolicy ? `, command policy ${instance.commandPolicy}` : ""}. Open the editor.`}
         onClick={() => navigate.toPluginPanel(EDITOR_PANEL, { subPath: threadId })}
         action={
-          instance.bindingSource === "terminal" ? undefined : (
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setBinding(true)}>
-              Change
-            </Button>
-          )
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setBinding(true)}>
+            Change
+          </Button>
         }
       />
       {instance.skippedModified.length > 0 ? (
@@ -94,13 +104,12 @@ export function BindDialog({ threadId, open, onOpenChange }: { threadId: string;
         ) : (
           <ul className="space-y-1">
             {instances.map((i) => {
-              const fixed = i.bindingSource === "terminal" && i.threadId !== threadId;
               const current = i.threadId === threadId;
               return (
                 <li key={i.key}>
                   <button
                     type="button"
-                    disabled={fixed || current}
+                    disabled={current}
                     className="flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 disabled:hover:bg-transparent"
                     onClick={() => {
                       setError(null);
@@ -119,7 +128,6 @@ export function BindDialog({ threadId, open, onOpenChange }: { threadId: string;
                       <span className="block truncate text-xs text-muted-foreground">
                         pid {i.pid}
                         {current ? ", this thread" : i.threadTitle ? `, now ${i.threadTitle}` : ", not bound"}
-                        {fixed ? " (started in that thread's terminal)" : ""}
                       </span>
                     </span>
                   </button>
