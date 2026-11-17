@@ -20,6 +20,7 @@ import { Follower } from "./server/follow";
 import { AgentWatcher } from "./server/watch";
 import { displayPath, lastLine, rootsOf } from "./server/format";
 import { SendHandler } from "./server/sends";
+import { Tree } from "./server/tree";
 import { HelixService } from "./server/service";
 import { MIGRATIONS, Store } from "./server/store";
 import { INSTRUCTIONS, TOOL_NAMES, registerTools } from "./server/tools";
@@ -89,6 +90,11 @@ export default async function plugin(bb: BbPluginApi) {
     host: { call: hostCall },
     reveal: (threadId) => bb.realtime.publish("reveal", { threadId }),
   });
+  const tree = new Tree({
+    sdk: () => bb.sdk,
+    service,
+    hostCall: (method, input, hostId) => hostCall(method, input as Record<string, unknown>, { hostId, timeoutMs: 15_000 }),
+  });
 
   const sends = new SendHandler({
     sdk: () => bb.sdk,
@@ -148,6 +154,7 @@ export default async function plugin(bb: BbPluginApi) {
       key: i.key,
       threadId: i.threadId,
       path: i.summary.focus?.path ? displayPath(i.summary.focus.path, rootsOf(i)) : null,
+      absolutePath: i.summary.focus?.path ?? null,
       line: i.summary.focus?.cursor?.line ?? null,
       col: i.summary.focus?.cursor?.col ?? null,
       endLine: i.summary.focus?.cursor ? lastLine(i.summary.focus.cursor, i.summary.focus.anchor) : null,
@@ -268,6 +275,9 @@ export default async function plugin(bb: BbPluginApi) {
       void annotator.refreshFile(environmentId, path);
       return { accepted: true };
     },
+    treeTerminal: ({ threadId }) => tree.terminal(threadId),
+    treeReveal: async ({ threadId, path }) => ({ ok: await tree.reveal(threadId, path).catch(() => false) }),
+    treeClose: async ({ threadId }) => ({ closed: await tree.close(threadId).catch(() => false) }),
     editorTerminal: ({ threadId }) => {
       // One session per thread: concurrent opens (page and tab) share one call.
       const running = openingTerminals.get(threadId);
@@ -307,7 +317,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (next.hxbPath !== previous.hxbPath || next.bridgeDir !== previous.bridgeDir) bb.rpc.experimental_invalidate([tags.setup]);
   });
 
-  registerCli(bb, service);
+  registerCli(bb, service, {
+    // A file chosen in the tree went to Helix: the app moves focus there.
+    treeOpened: (threadId) => bb.realtime.publish("tree-open", { threadId, at: Date.now() }),
+  });
   registerTools(bb, service);
 
   // The editor position on outgoing messages: the composer keeps a "Helix"

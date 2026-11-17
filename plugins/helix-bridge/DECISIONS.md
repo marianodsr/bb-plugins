@@ -211,3 +211,35 @@ conservatively. Newest last.
     puts the "Helix position" pill in the draft at once, as the user's own
     edit, and takes it out on a second click. On: the chip and per-thread
     toggle of decision 19, and no button.
+42. **The file tree** is yazi in its own thread-scoped bb terminal session
+    ("Files"), drawn by the same renderer in a pane left of Helix on the
+    editor page (not the thread's quick-look tab). Its configuration
+    directory (`YAZI_CONFIG_HOME`) is generated in the host's plugin data:
+    the user's keymap, theme, init.lua, package.toml, plugins and flavors are
+    linked, and `yazi.toml` is a copy of theirs with `[manager] ratio = [0,
+    1, 0]` and an `edit` opener added only when absent. The opener runs
+    `"${BB_CLI:-bb}" hx tree-open "$@"` detached (`orphan`), so yazi never
+    hides its screen; `EDITOR` is set to the same for users whose own opener
+    calls `$EDITOR`. `tree-open` opens the first file with `interrupt:
+    "always"` (the user chose it), the rest in the background, and tells the
+    app to focus the editor.
+43. **Following**: positions carry the focused file's absolute path; the
+    tree asks for `ya emit-to <client-id> reveal <path>` 250 ms after it
+    changes, never within 1.5 s of a key in the tree. The client id is
+    derived from the thread, so it survives plugin reloads. Refs only: a
+    cursor move never renders anything.
+44. **Terminal replies are not keys**: yazi queries the terminal at start;
+    bb's daemon answers part of it before the surface attaches, so the
+    surface's own answers arrive late and yazi would read them as keys. The
+    tree drops OSC/DCS strings and `CSI ?`/`CSI >` reports, cursor-position
+    and window-size reports from its input.
+45. **Colours**: without Ghostty colours the terminal defaults are bb's
+    `--background` and `--foreground`, which are `oklch()`; the WebGL
+    renderer reads only sRGB, so they are resolved through a 1x1 canvas.
+    (Before this, text in the terminal's default colour was invisible on
+    surfaces that rely on it, as yazi's file names did.)
+46. **Pane keys**: ⌘⇧Y shows or hides the tree, ⌘⇧H moves focus between
+    the panes (both free in bb's keymap). The editor sends its size while
+    focus is anywhere in the surface, because the tree changes its width.
+    Quitting yazi (any exit) closes its session and hides the pane; Helix
+    exiting closes the tree.

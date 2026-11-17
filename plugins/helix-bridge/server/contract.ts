@@ -38,7 +38,7 @@ export const appInstanceSchema = z.object({
 });
 export type AppInstance = z.infer<typeof appInstanceSchema>;
 
-export const positionSchema = z.object({ key: z.string(), threadId: z.string().nullable(), path: z.string().nullable(), line: z.number().nullable(), col: z.number().nullable(), endLine: z.number().nullable(), mode: z.string().nullable() });
+export const positionSchema = z.object({ key: z.string(), threadId: z.string().nullable(), path: z.string().nullable(), absolutePath: z.string().nullable(), line: z.number().nullable(), col: z.number().nullable(), endLine: z.number().nullable(), mode: z.string().nullable() });
 export type Position = z.infer<typeof positionSchema>;
 
 const draftSchema = z.object({ id: z.string(), threadId: z.string(), text: z.string(), summary: z.string(), createdAt: z.number() });
@@ -97,6 +97,24 @@ export const rpcContract = defineRpcContract({
     experimental_description: "Review Editor wrote a comment on this file: re-send its annotations to Helix. Returns at once.",
     input: z.object({ environmentId: id, path: z.string().min(1).max(4096) }).strict(),
     output: z.object({ accepted: z.boolean() }),
+  },
+  treeTerminal: {
+    experimental_description: "The thread's file tree session (yazi), started if needed; or what to install.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.union([
+      z.object({ terminalId: z.string(), created: z.boolean(), missing: z.null() }),
+      z.object({ terminalId: z.null(), created: z.literal(false), missing: z.string() }),
+    ]),
+  },
+  treeReveal: {
+    experimental_description: "Show a file in the thread's tree.",
+    input: z.object({ threadId: id, path: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  treeClose: {
+    experimental_description: "Close the thread's tree (the editor closed).",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ closed: z.boolean() }),
   },
   editorTerminal: {
     experimental_description: "The thread's Helix terminal session, started if needed.",

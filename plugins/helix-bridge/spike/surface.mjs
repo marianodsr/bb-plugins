@@ -12,6 +12,9 @@ const opt = (name, fallback) => (argv.includes(`--${name}`) ? argv[argv.indexOf(
 const thread = opt("thread", "thr_fh7kmixkaj");
 const width = Number(opt("width", "1440"));
 const out = opt("out", "spike/out/surface.json");
+// --pane tree: the matrix goes to the file tree (yazi) instead of Helix.
+const pane = opt("pane", "editor");
+const paneSelector = pane === "tree" ? "[data-helix-tree-terminal]" : "[data-helix-terminal]";
 
 const ALT = 1, CTRL = 2, META = 4, SHIFT = 8;
 const macOption = { x: "≈", ".": "≥", ";": "…", o: "ø", i: "Dead", n: "Dead", e: "Dead", u: "Dead", c: "ç", s: "ß", k: "˚", j: "∆", p: "π", d: "∂", b: "∫", f: "ƒ" };
@@ -39,6 +42,26 @@ const MATRIX = [
 ];
 
 const { browser, page } = await launch({ width, height: 900, theme: "dark" });
+// What each terminal socket sends, by terminal id, for the tree run.
+await page.evaluateOnNewDocument(() => {
+  window.__sockSent = {};
+  const Native = window.WebSocket;
+  window.WebSocket = class extends Native {
+    constructor(url, protocols) {
+      super(url, protocols);
+      const id = /\/ws\/terminals\/([^/?]+)/u.exec(String(url))?.[1];
+      if (!id) return;
+      const send = this.send.bind(this);
+      this.send = (data) => {
+        try {
+          const m = JSON.parse(data);
+          if (m.type === "input") (window.__sockSent[id] ??= []).push(atob(m.dataBase64).replace(/\x1b/gu, "ESC ").replace(/[\x00-\x1f]/gu, (c) => `^${String.fromCharCode(c.charCodeAt(0) + 64)}`));
+        } catch {}
+        return send(data);
+      };
+    }
+  };
+});
 const cdp = await page.createCDPSession();
 const result = { width };
 try {
@@ -53,18 +76,25 @@ try {
   });
   const effects = () => page.evaluate(() => ({
     path: location.pathname,
-    focusInEditor: Boolean(document.activeElement?.closest?.("[data-helix-terminal]")),
+    focusInEditor: Boolean(document.activeElement?.closest?.(window.__paneSelector)),
     dialogs: document.querySelectorAll('[role="dialog"], [role="menu"], [cmdk-root]').length,
   }));
+  await page.evaluate((sel) => {
+    window.__paneSelector = sel;
+    document.querySelector(`${sel} textarea`)?.focus();
+  }, paneSelector);
+  await sleep(300);
   result.start = { hud: await hud(), effects: await effects() };
 
-  // Typing: j 60 times, then 20 full redraws.
-  for (let i = 0; i < 60; i += 1) { await page.keyboard.press("j"); await sleep(60); }
-  await sleep(500);
-  result.afterJ = await hud();
-  for (let i = 0; i < 20; i += 1) { await page.keyboard.press("PageDown"); await sleep(250); }
-  await sleep(500);
-  result.afterPageDown = await hud();
+  if (pane === "editor") {
+    // Typing: j 60 times, then 20 full redraws.
+    for (let i = 0; i < 60; i += 1) { await page.keyboard.press("j"); await sleep(60); }
+    await sleep(500);
+    result.afterJ = await hud();
+    for (let i = 0; i < 20; i += 1) { await page.keyboard.press("PageDown"); await sleep(250); }
+    await sleep(500);
+    result.afterPageDown = await hud();
+  }
 
   // Key matrix (Escape back to normal mode between keys; Helix is the target).
   const dispatch = async (s) => {
@@ -76,19 +106,23 @@ try {
     for (const [b, key, code, keyCode] of modKeys.reverse()) { held &= ~b; await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCode, modifiers: held, location: 1 }); }
   };
   result.matrix = [];
-  for (const label of MATRIX) {
+  // The tree run skips Ctrl+c: it quits yazi (yazi's own key, not bb's).
+for (const label of pane === "tree" ? MATRIX.filter((k) => k !== "Ctrl+c") : MATRIX) {
     const before = await effects();
+    await page.evaluate(() => { window.__sockSent = {}; });
     await dispatch(spec(label));
     await sleep(650); // the HUD refreshes every 500 ms
     const after = await effects();
     const h = await hud();
     const bb = [after.path !== before.path && `navigated ${after.path}`, before.focusInEditor && !after.focusInEditor && "focus left the editor", after.dialogs > before.dialogs && "dialog or menu opened"].filter(Boolean).join(", ");
-    result.matrix.push({ key: label, received: h["Last key"], sent: h.Sent, bb: bb || null });
+    const sockets = await page.evaluate(() => window.__sockSent);
+    const treeSent = pane === "tree" ? Object.entries(sockets).map(([, v]) => v.join(" ")).join(" | ") : null;
+    result.matrix.push({ key: label, received: h["Last key"], sent: pane === "tree" ? treeSent : h.Sent, bb: bb || null });
     if (bb) {
       await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       if (after.path !== before.path) { await page.goBack().catch(() => {}); await sleep(2500); }
-      await page.evaluate(() => document.querySelector("[data-helix-terminal] textarea")?.focus());
+      await page.evaluate((sel) => document.querySelector(`${sel} textarea`)?.focus(), paneSelector);
       await sleep(300);
     }
   }

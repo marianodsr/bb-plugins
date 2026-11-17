@@ -33,6 +33,26 @@ export interface TerminalRenderer {
   dispose(): void;
 }
 
+/** Any CSS colour as #rrggbb, by painting one pixel. */
+export function toHex(css: string): string | null {
+  const value = css.trim();
+  if (!value) return null;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.fillStyle = "#000";
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+    return `#${[r, g, b].map((n) => (n ?? 0).toString(16).padStart(2, "0")).join("")}`;
+  } catch {
+    return null;
+  }
+}
+
 let corePromise: Promise<typeof GhosttyCore> | null = null;
 
 export async function createRenderer(element: HTMLElement, options: RendererOptions): Promise<TerminalRenderer> {
@@ -44,8 +64,10 @@ export async function createRenderer(element: HTMLElement, options: RendererOpti
   element.style.setProperty("--term-row-height", `${Math.ceil(options.fontSize * 1.2)}px`);
   element.style.fontWeight = options.fontWeight;
   const hex = (value: string | null) => (value && /^#?[0-9a-f]{6}$/iu.test(value) ? (value.startsWith("#") ? value : `#${value}`) : null);
-  if (hex(options.background)) element.style.setProperty("--term-bg", hex(options.background));
-  if (hex(options.foreground)) element.style.setProperty("--term-fg", hex(options.foreground));
+  // Without Ghostty colours the defaults are bb's background and text, which
+  // bb writes as oklch(); the WebGL renderer reads only sRGB, so resolve them.
+  element.style.setProperty("--term-bg", hex(options.background) ?? toHex(getComputedStyle(element).getPropertyValue("--background")) ?? "#000000");
+  element.style.setProperty("--term-fg", hex(options.foreground) ?? toHex(getComputedStyle(element).getPropertyValue("--foreground")) ?? "#ffffff");
   const term = new WTerm(element, {
     core,
     renderer: "webgl",

@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { EmptyState, StatusDot, ThreadChip } from "../../kit";
 import { useInstances, useThreadHelix, whereLabel } from "../data";
 import { composerFocusRequest } from "../stores";
-import { EditorSurface } from "../surface/EditorSurface";
+import { EditorSurface, surfaceControls } from "../surface/EditorSurface";
 
 export const EDITOR_PANEL = "editor";
 
@@ -31,7 +31,7 @@ export function EditorPage({ subPath }: { subPath: string }) {
     navigate.toThread(threadId);
   };
   // Keyed so switching threads mounts a fresh session.
-  return <EditorSurface key={threadId} threadId={threadId} active autoFocus onClosed={onClosed} />;
+  return <EditorSurface key={threadId} threadId={threadId} active autoFocus tree onClosed={onClosed} />;
 }
 
 /** The page header: which thread, where Helix is, and a switcher. */
@@ -43,6 +43,16 @@ export function EditorHeader({ subPath }: { subPath: string }) {
   if (!threadId) return null;
   return (
     <div className="flex min-w-0 max-w-[min(60vw,48rem)] items-center gap-3 text-xs">
+      <Button
+        size="sm"
+        variant="ghost"
+        className="size-7 shrink-0 p-0"
+        aria-label="Show or hide the file tree (⌘⇧Y)"
+        onClick={() => surfaceControls.get(threadId)?.toggleTree()}
+        data-helix-tree-toggle
+      >
+        <Icon name="Folder" className="size-4" />
+      </Button>
       <ThreadChip threadId={threadId} />
       {instance ? (
         <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground" title={instance.status === "connected" ? "Helix is connected" : `Helix is ${instance.status}`}>

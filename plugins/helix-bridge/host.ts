@@ -8,7 +8,8 @@
 // every 30 s, well inside the 5-minute idle window).
 import { experimental_defineHostEntry, type ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { hostContract, hostSignals } from "./shared/host-contract";
-import { readGhosttyConfig, runDoctor } from "./host/doctor";
+import { readGhosttyConfig, resolveExecutable, runDoctor } from "./host/doctor";
+import { prepareYazi, yaEmit } from "./host/yazi";
 import { InstanceManager, defaultBridgeDir } from "./host/manager";
 
 type Context = ExperimentalHostRpcContext<typeof hostSignals>;
@@ -77,6 +78,15 @@ const entry = experimental_defineHostEntry({
       return runDoctor({ bridgeDir: current.bridgeDir, hxbPath, fontFamily, instances: current.list() });
     },
     perfMode: async ({ instanceId, mode }, context) => ({ found: await managerFor(null, context).setPerfMode(instanceId, mode) }),
+    yaziPrepare: (_input, context) => prepareYazi(context.experimental_paths.dataDir),
+    yaziEmit: async ({ clientId, name, args }) => {
+      const ya = resolveExecutable("ya");
+      if (!ya) return { ok: false, error: "ya is not on PATH" };
+      return yaEmit(ya, clientId, name, args).then(
+        () => ({ ok: true, error: null }),
+        (error: unknown) => ({ ok: false, error: String(error) }),
+      );
+    },
     ghosttyConfig: () => readGhosttyConfig(),
   },
   dispose: () => {

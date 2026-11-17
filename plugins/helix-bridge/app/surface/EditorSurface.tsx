@@ -3,8 +3,8 @@
 // (app/terminal/keys.ts). Several surfaces may show the same session (the
 // editor page and the thread's Helix tab); only the focused one sends resize,
 // so they never fight over the size.
-import { useEffect, useRef, useState } from "react";
-import { experimental_copyToClipboard as copyToClipboard, useSdk } from "@get-bb/plugin-sdk/app";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { experimental_copyToClipboard as copyToClipboard, experimental_usePluginId as usePluginId, useSdk } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { EmptyState, Skeleton } from "../../kit";
@@ -13,6 +13,31 @@ import { HudMeter, type HudSnapshot } from "../terminal/hud";
 import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
 import { createRenderer, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
+import { TreePane, type TreeHandle } from "./TreePane";
+
+/** Pane controls of the visible surfaces, by thread, for the app's commands. */
+export const surfaceControls = new Map<string, { toggleTree(): void; switchFocus(): void }>();
+
+const TREE_MIN = 160;
+const TREE_MAX = 640;
+/** Narrower surfaces start with the tree hidden. */
+const TREE_DEFAULT_MIN_SURFACE = 960;
+
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // not remembered
+  }
+}
 
 /** The last few KB a session printed, for the exit report. */
 class OutputTail {
@@ -62,6 +87,8 @@ export interface EditorSurfaceProps {
   active: boolean;
   autoFocus?: boolean;
   className?: string;
+  /** Show the file tree pane (the editor page; not the thread's quick-look tab). */
+  tree?: boolean;
   /**
    * Helix exited cleanly or bb closed its terminal: the session is already
    * closed; the caller takes the surface away (back to the thread, or close
@@ -70,7 +97,7 @@ export interface EditorSurfaceProps {
   onClosed(): void;
 }
 
-export function EditorSurface({ threadId, active, autoFocus, className, onClosed }: EditorSurfaceProps) {
+export function EditorSurface({ threadId, active, autoFocus, className, tree, onClosed }: EditorSurfaceProps) {
   const setup = useSetup();
   const ghostty = useGhostty();
   const binaryMissing = setup.data?.checks.find((c) => c.id === "binary" && c.level === "error") ?? null;
@@ -81,13 +108,14 @@ export function EditorSurface({ threadId, active, autoFocus, className, onClosed
     if (ghostty.error) return <SurfaceError message={`Could not read the editor settings: ${ghostty.error}`} onRetry={ghostty.refetch} className={className} />;
     return <SurfaceSkeleton className={className} />;
   }
-  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} config={ghostty.data} className={className} onClosed={onClosed} />;
+  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} tree={tree ?? false} config={ghostty.data} className={className} onClosed={onClosed} />;
 }
 
 function Session({
   threadId,
   active,
   autoFocus,
+  tree,
   config,
   className,
   onClosed,
@@ -96,6 +124,7 @@ function Session({
   threadId: string;
   active: boolean;
   autoFocus: boolean;
+  tree: boolean;
   config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; optionAsAlt: OptionAsAlt; hud: boolean; background: string | null; foreground: string | null };
   className?: string;
 }) {
@@ -108,12 +137,36 @@ function Session({
   const [exit, setExit] = useState<{ code: number | null; lastLines: string } | null>(null);
   const onClosedRef = useRef(onClosed);
   onClosedRef.current = onClosed;
+  const closeTreeRef = useRef<() => void>(() => {});
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [restart, setRestart] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
   const optionRef = useRef<OptionAsAlt>(config.optionAsAlt);
   optionRef.current = config.optionAsAlt;
+  const pluginId = usePluginId();
+  const surface = useRef<HTMLDivElement>(null);
+  const treeHandle = useRef<TreeHandle | null>(null);
+  const editorFocus = useRef<(() => void) | null>(null);
+  const visibleKey = `${pluginId}.tree.visible`;
+  const widthKey = `${pluginId}.tree.width`;
+  const [treeOpen, setTreeOpen] = useState<boolean | null>(() => {
+    const stored = readStored(visibleKey);
+    return stored === null ? null : stored === "1";
+  });
+  const [treeWidth, setTreeWidth] = useState(() => Math.min(TREE_MAX, Math.max(TREE_MIN, Number(readStored(widthKey)) || 260)));
+  // Not chosen yet in this browser: shown on wide surfaces only.
+  useLayoutEffect(() => {
+    if (treeOpen !== null || !tree) return;
+    setTreeOpen((surface.current?.clientWidth ?? 0) >= TREE_DEFAULT_MIN_SURFACE);
+  }, [tree, treeOpen]);
+  const showTree = tree && treeOpen === true;
+  const setTreeVisible = (visible: boolean) => {
+    setTreeOpen(visible);
+    writeStored(visibleKey, visible ? "1" : "0");
+    if (!visible) editorFocus.current?.();
+  };
+  closeTreeRef.current = () => void rpc.call("treeClose", { threadId }).catch(() => {});
 
   // The thread's terminal session, started on first use.
   useEffect(() => {
@@ -141,7 +194,10 @@ function Session({
     // With the HUD on, drivers can read and reset the raw samples.
     if (meter) (window as unknown as { __helixHud?: HudMeter }).__helixHud = meter;
     const tail = new OutputTail();
-    const owns = () => activeRef.current && element.contains(document.activeElement);
+    // The editor owns its size while focus is anywhere in this surface (the
+    // tree beside it changes its width); another surface showing the same
+    // session (the thread's tab) never fights it.
+    const owns = () => activeRef.current && Boolean(surface.current?.contains(document.activeElement));
     const stream = new TerminalStream(terminalId, {
       onChunk: (chunk) => {
         renderer?.write(chunk.bytes);
@@ -162,6 +218,8 @@ function Session({
         if (!outcome) return;
         disposed = true;
         stream.close();
+        // The tree goes with the editor.
+        closeTreeRef.current();
         if (outcome === "close") {
           void sdk.terminals.close({ terminalId, mode: "force" }).catch(() => {});
           onClosedRef.current();
@@ -210,6 +268,7 @@ function Session({
           return;
         }
         renderer = created;
+        editorFocus.current = () => created.focus();
         // With the HUD on, drivers can also read the screen (status line included).
         if (meter) (window as unknown as { __helixScreen?: () => Promise<string> }).__helixScreen = () => created.term.readText();
         removeKeys = installKeyLayer(element, {
@@ -271,9 +330,75 @@ function Session({
     };
   }, [threadId, active]);
 
+  // Cmd shortcuts (app.tsx): show or hide the tree, move focus between panes.
+  const controls = useRef({ toggleTree: () => {}, switchFocus: () => {} });
+  controls.current = {
+    toggleTree: () => {
+      if (!tree) return;
+      if (showTree) setTreeVisible(false);
+      else {
+        setTreeVisible(true);
+        window.setTimeout(() => treeHandle.current?.focus(), 300);
+      }
+    },
+    switchFocus: () => {
+      if (showTree && !treeHandle.current?.focused()) treeHandle.current?.focus();
+      else editorFocus.current?.();
+    },
+  };
+  useEffect(() => {
+    if (!active) return;
+    const entry = { toggleTree: () => controls.current.toggleTree(), switchFocus: () => controls.current.switchFocus() };
+    surfaceControls.set(threadId, entry);
+    return () => {
+      if (surfaceControls.get(threadId) === entry) surfaceControls.delete(threadId);
+    };
+  }, [threadId, active]);
+
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = treeWidth;
+    let width = startWidth;
+    const move = (e: PointerEvent) => {
+      width = Math.min(TREE_MAX, Math.max(TREE_MIN, startWidth + e.clientX - startX));
+      setTreeWidth(width);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      writeStored(widthKey, String(Math.round(width)));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   return (
-    <div className={cn("relative flex min-h-0 flex-1 flex-col bg-background", className)} data-helix-surface={threadId}>
-      <div ref={host} className="helix-surface min-h-0 flex-1 overflow-hidden" data-helix-terminal />
+    <div ref={surface} className={cn("relative flex min-h-0 flex-1 flex-col bg-background", className)} data-helix-surface={threadId}>
+      <div className="flex min-h-0 flex-1">
+        {showTree ? (
+          <>
+            <TreePane
+              threadId={threadId}
+              width={treeWidth}
+              config={config}
+              handle={treeHandle}
+              onQuit={() => setTreeVisible(false)}
+              onOpened={() => editorFocus.current?.()}
+            />
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize the file tree"
+              tabIndex={-1}
+              onPointerDown={startDrag}
+              className="w-1 shrink-0 cursor-col-resize bg-border/60 transition-colors duration-[120ms] hover:bg-ring/60"
+              data-helix-tree-divider
+            />
+          </>
+        ) : null}
+        <div ref={host} className="helix-surface min-h-0 min-w-0 flex-1 overflow-hidden" data-helix-terminal />
+      </div>
       {state === "exited" ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background p-6" data-helix-exit>
           <div className="flex w-full max-w-xl flex-col gap-3">

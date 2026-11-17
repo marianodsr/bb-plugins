@@ -62,6 +62,23 @@ async function run(cmd) {
         await sleep(cmd.gap ?? 40);
       }
       return "ok";
+    case "chord":
+      for (const m of cmd.mods) await page.keyboard.down(m);
+      await page.keyboard.press(cmd.key);
+      for (const m of [...cmd.mods].reverse()) await page.keyboard.up(m);
+      return "ok";
+    case "drag": {
+      const box = await page.evaluate((sel) => {
+        const r = document.querySelector(sel)?.getBoundingClientRect();
+        return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+      }, cmd.selector);
+      if (!box) return "no element";
+      await page.mouse.move(box.x, box.y);
+      await page.mouse.down();
+      await page.mouse.move(box.x + cmd.dx, box.y, { steps: 8 });
+      await page.mouse.up();
+      return "ok";
+    }
     case "shot":
       await page.screenshot({ path: cmd.path });
       return cmd.path;

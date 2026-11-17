@@ -19,6 +19,28 @@ The editor is `hxb` on PATH (setting `hxbPath` overrides). The bridge
 directory follows Helix: `$XDG_CACHE_HOME/helix/bridge` or
 `~/.cache/helix/bridge` (setting `bridgeDir` overrides).
 
+## The file tree
+
+With [yazi](https://yazi-rs.github.io) installed (`brew install yazi`; `bb hx
+doctor` checks), the editor page shows a file tree beside Helix. Choose a file
+(Enter, or your opener key) and it opens in Helix, and focus moves to the
+editor. When the file in Helix changes, the tree moves to it, unless you are
+moving in the tree right then.
+
+| Keys | |
+|---|---|
+| ⌘⇧Y | show or hide the tree (also the folder button in the page header) |
+| ⌘⇧H | move focus between the tree and the editor |
+| `q` in the tree | quit yazi: the tree hides, Helix stays |
+
+Drag the divider to resize; width and visibility are remembered in this
+browser (the tree starts hidden on narrow windows). Your own yazi
+configuration applies (keymap, theme, plugins, `yazi.toml`) and is never
+written: the tree runs with a generated configuration directory in the
+plugin's data that links yours and adds one column and the "Open in Helix"
+opener only when your `yazi.toml` does not set them. Quitting Helix closes
+the tree.
+
 ## Your position in messages
 
 Messages carry nothing about where you are in Helix unless you ask. The

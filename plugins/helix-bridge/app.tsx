@@ -13,7 +13,7 @@ import { FromHelixReceipt, PositionAction, PositionChip } from "./app/composer/C
 import { HelixOverlay } from "./app/overlay/HelixOverlay";
 import { commandRequest } from "./app/stores";
 import { ChatTab, EDITOR_PANEL, EditorHeader, EditorPage } from "./app/pages/EditorPage";
-import { visibleSurfaces } from "./app/surface/EditorSurface";
+import { surfaceControls, visibleSurfaces } from "./app/surface/EditorSurface";
 import { HelixSegment, HelixStatusRow, HelixTab, useHelixSegmentVisible } from "./app/thread/ThreadParts";
 
 function focusEditor(): boolean {
@@ -98,10 +98,21 @@ export default definePluginApp((app) => {
   });
   app.commands.register({
     id: "focus-editor",
-    title: "Helix: focus the editor",
+    title: "Helix: switch focus between the file tree and the editor",
     defaultShortcut: { key: "h", mod: true, shift: true },
     isAvailable: () => visibleSurfaces.size > 0,
-    run: () => void focusEditor(),
+    run: () => {
+      const controls = [...surfaceControls.values()][0];
+      if (controls) controls.switchFocus();
+      else void focusEditor();
+    },
+  });
+  app.commands.register({
+    id: "toggle-tree",
+    title: "Helix: show or hide the file tree",
+    defaultShortcut: { key: "y", mod: true, shift: true },
+    isAvailable: () => surfaceControls.size > 0,
+    run: () => [...surfaceControls.values()][0]?.toggleTree(),
   });
   app.commands.register({
     id: "bind",

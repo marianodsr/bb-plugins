@@ -140,6 +140,16 @@ export const hostContract = defineRpcContract({
     input: z.object({ instanceId: z.string(), mode: z.enum(["normal", "quiet", "off"]) }).strict(),
     output: z.object({ found: z.boolean() }),
   },
+  yaziPrepare: {
+    experimental_description: "Find yazi and write the file tree's configuration directory (layered on the user's, which is never written).",
+    input: z.object({}).strict(),
+    output: z.object({ yazi: z.string().nullable(), ya: z.string().nullable(), version: z.string().nullable(), configDir: z.string().nullable(), userConfig: z.string().nullable() }),
+  },
+  yaziEmit: {
+    experimental_description: "Send a command to a running file tree (ya emit-to).",
+    input: z.object({ clientId: z.string().regex(/^\d{1,15}$/u), name: z.enum(["reveal", "cd", "hidden", "escape"]), args: z.array(z.string().max(4096)).max(4) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+  },
   ghosttyConfig: {
     experimental_description: "The user's Ghostty configuration, read only.",
     experimental_retryable: true,

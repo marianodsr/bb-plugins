@@ -18,6 +18,8 @@ import { selectionBlock } from "../server/sends";
 import { TOOL_NAMES } from "../server/tools";
 import { commentItems, type ReviewComment } from "../server/annotations";
 import { editedPaths, revealOf } from "../server/watch";
+import { treeYaziToml } from "../host/yazi";
+import { treeClientId } from "../server/tree";
 // @ts-expect-error plain ESM test helper without types
 import { startMockBridge } from "./mock-bridge/mock.mjs";
 
@@ -480,6 +482,33 @@ describe("watching the agent write", () => {
     expect(editedPaths(fileChange("/w/a.go", "pending"), "/w")).toBeNull();
     expect(editedPaths({ type: "commandExecution", status: "completed" }, "/w")).toBeNull();
     expect(editedPaths({ type: "fileChange", status: "completed", changes: [{ path: "/w/gone.go", kind: "delete" }] }, "/w")).toBeNull();
+  });
+});
+
+describe("the file tree", () => {
+  it("layers its two settings on the user's yazi.toml without overriding theirs", () => {
+    const fresh = treeYaziToml(null);
+    expect(fresh).toMatch(/\[manager\]\nratio = \[0, 1, 0\]/u);
+    expect(fresh).toMatch(/\[opener\]\nedit = \[\{ run = '"\$\{BB_CLI:-bb\}" hx tree-open "\$@"', desc = "Open in Helix", orphan = true, for = "unix" \}\]/u);
+    const theirs = treeYaziToml('[manager]\nshow_hidden = true\n\n[opener]\nedit = [{ run = "nvim $@", block = true }]\n');
+    expect(theirs).toMatch(/\[manager\]\nratio = \[0, 1, 0\]\nshow_hidden = true/u);
+    expect(theirs).toMatch(/edit = \[\{ run = "nvim \$@", block = true \}\]/u);
+    expect(theirs).not.toMatch(/Open in Helix/u);
+    expect(theirs.match(/^\[manager\]/gmu)).toHaveLength(1);
+    expect(treeYaziToml("[manager]\nratio = [1, 4, 3]\n")).not.toMatch(/ratio = \[0, 1, 0\]/u);
+  });
+
+  it("gives each thread its own stable yazi client id", () => {
+    expect(treeClientId("thr_a")).toBe(treeClientId("thr_a"));
+    expect(treeClientId("thr_a")).not.toBe(treeClientId("thr_b"));
+    expect(treeClientId("thr_a")).toMatch(/^\d{1,15}$/u);
+  });
+
+  it("opens what the tree chose in the Helix serving the thread, and tells the app", async () => {
+    const result = await fake.harness.behavior.runCli(["tree-open", join(workspace, "util.go")], { threadId: "thr_term" });
+    expect(result.exitCode).toBe(0);
+    await until(() => (mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path === join(workspace, "util.go"));
+    expect(fake.harness.inspection.realtimeSignals.some((s) => s.channel === "tree-open" && (s.payload as { threadId: string }).threadId === "thr_term")).toBe(true);
   });
 });
 
