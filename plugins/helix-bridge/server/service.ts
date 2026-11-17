@@ -68,7 +68,8 @@ export class HelixService {
     const all = this.bridge.list();
     const bound = all.filter((i) => i.threadId === threadId);
     const info = await this.threadInfo(threadId);
-    const inEnv = all.filter((i) => !bound.includes(i) && info.hostId === i.hostId && info.path && i.summary.workspaceRoot && (within(info.path, i.summary.workspaceRoot) || within(i.summary.workspaceRoot, info.path)));
+    // Test instances (the mock bridge) serve only threads bound explicitly.
+    const inEnv = all.filter((i) => !bound.includes(i) && !i.summary.test && info.hostId === i.hostId && info.path && i.summary.workspaceRoot && (within(info.path, i.summary.workspaceRoot) || within(i.summary.workspaceRoot, info.path)));
     const rank = (i: BoundInstance) => (i.summary.status === "connected" ? 0 : 1);
     return [...bound.sort((a, b) => rank(a) - rank(b) || b.summary.updatedAt - a.summary.updatedAt), ...inEnv.sort((a, b) => rank(a) - rank(b))];
   }
@@ -79,8 +80,8 @@ export class HelixService {
       (i) =>
         i.summary.status === "connected" &&
         (i.threadId === threadId ||
-          (environment !== null && i.environmentId === environment.id) ||
-          (environment?.path && hostId === i.hostId && i.summary.workspaceRoot && within(environment.path, i.summary.workspaceRoot))),
+          (!i.summary.test && environment !== null && i.environmentId === environment.id) ||
+          (!i.summary.test && environment?.path && hostId === i.hostId && i.summary.workspaceRoot && within(environment.path, i.summary.workspaceRoot))),
     );
   }
 
@@ -249,6 +250,25 @@ export class HelixService {
   async status(instance: BoundInstance, message: string, severity: "info" | "warning" | "error" = "info"): Promise<void> {
     if (instance.summary.status !== "connected" || !instance.summary.capabilities.includes("editor")) return;
     await this.call(instance, "editor/status", { message: message.slice(0, 300), severity }).catch(() => {});
+  }
+
+  /**
+   * One short line saying where the user is in the Helix serving a thread,
+   * attached to their messages by the position mention. Never the file's text.
+   */
+  async positionLine(threadId: string): Promise<string> {
+    const instance = (await this.instancesForThread(threadId)).find((i) => i.summary.status === "connected");
+    const focus = instance?.summary.focus;
+    if (!instance || !focus?.path) return "Helix editor position: not available (no connected Helix, or a scratch buffer).";
+    const roots = [instance.environmentPath, instance.summary.workspaceRoot].filter((r): r is string => Boolean(r));
+    let path = focus.path;
+    for (const root of roots) if (within(root, path) && path !== root) {
+      path = path.slice(root.replace(/\/$/u, "").length + 1);
+      break;
+    }
+    const cursor = focus.cursor;
+    const range = focus.anchor && cursor ? ` selecting ${cursor.line}:${cursor.col} to ${focus.anchor.line}:${focus.anchor.col}` : cursor ? ` line ${cursor.line}, column ${cursor.col}` : "";
+    return `Helix editor position (the user is looking at): ${path}${range}${focus.modified ? ", with unsaved changes" : ""}${instance.summary.mode && instance.summary.mode !== "normal" ? `, ${instance.summary.mode} mode` : ""}. Use helix_selection for the text.`;
   }
 
   // ----- setup ----------------------------------------------------------------

@@ -4,8 +4,8 @@
 // timings: a capture-phase keydown stamps the key, the renderer's paint
 // callback closes the measurement.
 import { useEffect, useRef, useState } from "react";
-import { createRenderer, RENDERER_KINDS, type RendererKind, type TerminalRenderer } from "../terminal/renderer";
-import { TerminalStream } from "../terminal/stream";
+import { createRenderer, RENDERER_KINDS, type RendererKind, type TerminalRenderer } from "./renderer-candidates";
+import { TerminalStream } from "../app/terminal/stream";
 
 const WASM_URL = "/api/v1/plugins/helix-bridge/http/wterm-ghostty.wasm";
 

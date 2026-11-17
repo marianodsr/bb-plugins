@@ -52,6 +52,8 @@ export interface RegistryFile {
   cwd?: string;
   workspaceRoot?: string;
   env?: Partial<Record<"BB_THREAD_ID" | "BB_ENVIRONMENT_ID" | "BB_PROJECT_ID" | "BB_TERMINAL_ID", string>>;
+  /** Set only by the plugin's mock bridge: never map this instance by workspace. */
+  test?: boolean;
 }
 
 export interface HelloResult {

@@ -39,7 +39,7 @@ export function instanceLine(instance: BoundInstance, threadTitle?: string | nul
   const where = s.focus?.path ? `${displayPath(s.focus.path, rootsOf(instance))}${s.focus.cursor ? `:${s.focus.cursor.line}` : ""}` : "no file";
   const thread = instance.threadId ? `${instance.threadId}${threadTitle ? ` "${threadTitle}"` : ""} (${instance.bindingSource})` : "not bound";
   const status = s.status === "connected" ? "" : `  [${s.status}${s.error ? `: ${s.error}` : ""}]`;
-  return `${instance.key}  pid ${s.pid}  ${s.workspaceRoot ?? s.cwd ?? "?"}  ${where}  -> ${thread}${status}`;
+  return `${instance.key}  pid ${s.pid}${s.test ? " (test)" : ""}  ${s.workspaceRoot ?? s.cwd ?? "?"}  ${where}  -> ${thread}${status}`;
 }
 
 export function stateText(instance: BoundInstance, threadTitle?: string | null, signals?: number): string {

@@ -1,124 +1,67 @@
-// One interface over the terminal renderers the spike compares, so the
-// editor surface can swap them. Each renderer owns its element's keyboard,
-// mouse and paste handling and reports what it wants sent to the PTY.
+// The terminal renderer behind the editor surface: Ghostty's VT core
+// (@wterm/ghostty, WebAssembly) drawn by @wterm/dom with its WebGL renderer,
+// which falls back to the DOM renderer without WebGL2 or after a lost
+// context. Kept thin so the renderer can be swapped (spike/RESULTS.md).
 import "@wterm/dom/css";
-
-export type RendererKind = "ghostty-web" | "wterm-dom" | "wterm-webgl";
-export const RENDERER_KINDS: readonly RendererKind[] = ["ghostty-web", "wterm-dom", "wterm-webgl"];
+import { WTerm } from "@wterm/dom";
+import { GhosttyCore } from "@wterm/ghostty";
 
 export interface RendererOptions {
+  wasmUrl: string;
   fontFamily: string;
   fontSize: number;
-  theme: { background: string; foreground: string };
-  /** URL of the Ghostty VT WebAssembly binary for the wterm core. */
-  wterm_wasmUrl: string;
-}
-
-export interface RendererCallbacks {
+  fontWeight: string;
   onInput(data: string | Uint8Array): void;
   onResize(cols: number, rows: number): void;
-  onClipboardWrite?(text: string): void;
-  /** After the renderer has painted what it was given. */
-  onPaint?(): void;
+  onClipboardWrite(text: string): void;
 }
 
 export interface TerminalRenderer {
-  readonly kind: RendererKind;
+  readonly term: WTerm;
   write(bytes: Uint8Array): void;
   focus(): void;
   fit(): void;
   size(): { cols: number; rows: number };
-  /** Bytes of WebAssembly memory the core holds, when it says. */
-  wasmBytes(): number | null;
+  /** "webgl" while the GPU canvas paints, else "dom". */
+  mode(): "webgl" | "dom";
+  kittyFlags(): number;
+  selection(): string | null;
   dispose(): void;
 }
 
-export async function createRenderer(
-  kind: RendererKind,
-  element: HTMLElement,
-  options: RendererOptions,
-  callbacks: RendererCallbacks,
-): Promise<TerminalRenderer> {
-  if (kind === "ghostty-web") return createGhosttyWeb(element, options, callbacks);
-  return createWterm(kind === "wterm-webgl" ? "webgl" : "dom", element, options, callbacks);
-}
+let corePromise: Promise<typeof GhosttyCore> | null = null;
 
-async function createGhosttyWeb(element: HTMLElement, options: RendererOptions, callbacks: RendererCallbacks): Promise<TerminalRenderer> {
-  const { Ghostty, Terminal, FitAddon } = await import("ghostty-web");
-  const ghostty = await Ghostty.load();
-  const term = new Terminal({
-    ghostty,
-    fontFamily: options.fontFamily,
-    fontSize: options.fontSize,
-    theme: options.theme,
-    cursorBlink: false,
-    scrollback: 5000,
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open(element);
-  const data = term.onData((value) => callbacks.onInput(value));
-  const resize = term.onResize(({ cols, rows }) => callbacks.onResize(cols, rows));
-  fit.fit();
-  fit.observeResize();
-  callbacks.onResize(term.cols, term.rows);
-  const memory = (ghostty as unknown as { exports?: { memory?: WebAssembly.Memory } }).exports?.memory;
-  return {
-    kind: "ghostty-web",
-    write: (bytes) => {
-      term.write(bytes);
-      // ghostty-web paints from its own animation-frame loop (its onRender
-      // event never fires); a frame queued now runs after that paint.
-      if (callbacks.onPaint) requestAnimationFrame(() => callbacks.onPaint?.());
-    },
-    focus: () => term.focus(),
-    fit: () => fit.fit(),
-    size: () => ({ cols: term.cols, rows: term.rows }),
-    wasmBytes: () => memory?.buffer.byteLength ?? null,
-    dispose: () => {
-      data.dispose();
-      resize.dispose();
-      term.dispose();
-    },
-  };
-}
-
-async function createWterm(
-  renderer: "dom" | "webgl",
-  element: HTMLElement,
-  options: RendererOptions,
-  callbacks: RendererCallbacks,
-): Promise<TerminalRenderer> {
-  const [{ WTerm }, { GhosttyCore }] = await Promise.all([import("@wterm/dom"), import("@wterm/ghostty")]);
-  const core = await GhosttyCore.load({ wasmPath: options.wterm_wasmUrl, scrollbackLines: 5000 });
+export async function createRenderer(element: HTMLElement, options: RendererOptions): Promise<TerminalRenderer> {
+  corePromise ??= Promise.resolve(GhosttyCore);
+  const Core = await corePromise;
+  const core = await Core.load({ wasmPath: options.wasmUrl, scrollbackLines: 5000 });
   element.style.fontFamily = options.fontFamily;
   element.style.fontSize = `${options.fontSize}px`;
-  element.style.setProperty("--term-bg", options.theme.background);
-  element.style.setProperty("--term-fg", options.theme.foreground);
+  element.style.fontWeight = options.fontWeight;
   const term = new WTerm(element, {
     core,
-    renderer,
+    renderer: "webgl",
     autoResize: true,
     cursorBlink: false,
-    onData: (value) => callbacks.onInput(value),
-    onBinary: (bytes) => callbacks.onInput(bytes),
-    onResize: (cols, rows) => callbacks.onResize(cols, rows),
-    onClipboardWrite: (text) => callbacks.onClipboardWrite?.(text),
+    onData: (data) => options.onInput(data),
+    onBinary: (bytes) => options.onInput(bytes),
+    onResize: (cols, rows) => options.onResize(cols, rows),
+    onClipboardWrite: (text) => options.onClipboardWrite(text),
   });
   await term.init();
-  callbacks.onResize(term.cols, term.rows);
-  const memory = (core as unknown as { wasm?: { exports?: { memory?: WebAssembly.Memory } } }).wasm?.exports?.memory;
+  options.onResize(term.cols, term.rows);
   return {
-    kind: renderer === "webgl" ? "wterm-webgl" : "wterm-dom",
-    write: (bytes) => {
-      term.write(bytes);
-      // wterm paints on the next animation frame; this callback queues after it.
-      if (callbacks.onPaint) requestAnimationFrame(() => callbacks.onPaint?.());
-    },
+    term,
+    write: (bytes) => term.write(bytes),
     focus: () => term.focus(),
     fit: () => term.fit(),
     size: () => ({ cols: term.cols, rows: term.rows }),
-    wasmBytes: () => memory?.buffer.byteLength ?? null,
+    mode: () => {
+      const canvas = element.querySelector("canvas");
+      return canvas && !canvas.hidden ? "webgl" : "dom";
+    },
+    kittyFlags: () => term.bridge?.kittyKeyboardFlags?.() ?? 0,
+    selection: () => term.getSelectionText(),
     dispose: () => term.destroy(),
   };
 }

@@ -128,11 +128,32 @@ describe("instances and bindings", () => {
     const sameEnv = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_x" } as never, environment: { id: "env_test", path: workspace } as never }),
     );
-    expect(names(sameEnv.tools)).toEqual([...TOOL_NAMES]);
+    // A test instance never serves a thread through its workspace.
+    expect(names(sameEnv.tools)).toEqual([]);
     const other = await fake.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext({ thread: { id: "thr_y" } as never, environment: { id: "env_other", path: "/elsewhere" } as never }),
     );
     expect(names(other.tools)).toEqual([]);
+  });
+});
+
+describe("test instances", () => {
+  it("are never bound to a thread through their workspace", async () => {
+    // Restart with no BB_THREAD_ID: the mock's workspace is env_test's path,
+    // and env_test has thread thr_env, but a test instance stays unbound.
+    reconcile.controller.abort();
+    await reconcile.done.catch(() => {});
+    await fake.harness.lifecycle.dispose();
+    manager.dispose();
+    await mock.stop();
+    rmSync(dir, { recursive: true, force: true });
+    await setup({});
+    const out = await fake.harness.behavior.runCli(["list"]);
+    expect(out.stdout).toMatch(/\(test\).*-> not bound/u);
+    const tool = await fake.harness.behavior.callAgentTool("helix_selection", {}, { threadId: "thr_env" });
+    expect(tool).toMatchObject({ isError: true });
+    const bound = await fake.harness.behavior.runCli(["bind", "--instance", String(process.pid), "--thread", "thr_env"]);
+    expect(bound.stdout).toMatch(/thr_env "Thread thr_env" \(explicit\)/u);
   });
 });
 

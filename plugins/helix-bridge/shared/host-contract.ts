@@ -19,6 +19,8 @@ export const instanceSummarySchema = z.object({
   cwd: z.string().nullable(),
   workspaceRoot: z.string().nullable(),
   env: z.record(z.string(), z.string()),
+  /** A test instance (the mock bridge): bound only explicitly. */
+  test: z.boolean(),
   status: z.enum(["connecting", "connected", "disconnected", "incompatible"]),
   protocol: z.number().int().nullable(),
   capabilities: z.array(z.string()),

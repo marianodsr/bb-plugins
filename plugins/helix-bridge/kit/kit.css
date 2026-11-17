@@ -1,0 +1,194 @@
+/* GENERATED from /kit by kit/scripts/sync.mjs (kit 36f976388355). Do not edit; change /kit and re-sync. */
+/*
+ * Kit motion and loading primitives. Plain CSS: esbuild bundles it into the
+ * plugin's dist/app.css untouched (no Tailwind processing). Colours come from
+ * host variables only. Values mirror kit/motion.ts and docs/DESIGN.md.
+ */
+
+:root {
+  --kit-dur-press: 120ms;
+  --kit-dur-enter: 200ms;
+  --kit-dur-exit: 140ms;
+  --kit-dur-handoff: 520ms;
+  --kit-dur-reduced: 120ms;
+  --kit-loading-delay: 150ms;
+  --kit-ease-press: cubic-bezier(0, 0, 0.58, 1);
+  --kit-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --kit-ease-exit: cubic-bezier(0.42, 0, 1, 1);
+  /* A CSS approximation of the `shift` spring for grid-rows collapse. */
+  --kit-ease-shift: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --kit-dur-shift: 260ms;
+}
+
+/* Live status: the only thing that moves on its own. */
+@keyframes kit-live-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+.kit-live-pulse {
+  position: relative;
+}
+
+.kit-live-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: kit-live-pulse 1.8s var(--kit-ease-exit) infinite;
+  pointer-events: none;
+}
+
+/* The thin live line on a running card's leading edge. */
+@keyframes kit-live-line {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.kit-live-line {
+  animation: kit-live-line 1.8s ease-in-out infinite;
+}
+
+/* Skeletons: invisible for the first 150 ms, then a slow breathe. */
+@keyframes kit-skeleton-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes kit-skeleton-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Kept for callers that wrap their own placeholders. */
+.kit-skeleton-delay {
+  animation: kit-skeleton-in var(--kit-dur-enter) var(--kit-ease-enter)
+    var(--kit-loading-delay) both;
+}
+
+/* Hidden for 150 ms, fades in, then breathes. One element, two animations. */
+.kit-skeleton {
+  background: var(--muted);
+  animation:
+    kit-skeleton-in var(--kit-dur-enter) var(--kit-ease-enter) var(--kit-loading-delay) both,
+    kit-skeleton-breathe 1.6s ease-in-out calc(var(--kit-loading-delay) + var(--kit-dur-enter)) infinite;
+}
+
+/* Background refresh: a 2 px indeterminate line under the header. */
+@keyframes kit-progress {
+  0% {
+    transform: translateX(-100%) scaleX(0.6);
+  }
+  60% {
+    transform: translateX(120%) scaleX(1);
+  }
+  100% {
+    transform: translateX(260%) scaleX(0.6);
+  }
+}
+
+.kit-progress-bar {
+  animation: kit-progress 1.25s var(--kit-ease-enter) infinite;
+}
+
+/* A changed row flashes its background once. */
+@keyframes kit-flash {
+  0% {
+    background-color: var(--surface-selected);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.kit-flash {
+  animation: kit-flash 900ms var(--kit-ease-exit) both;
+}
+
+/* Grid-rows collapse (see Collapse.tsx). */
+.kit-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--kit-dur-exit) var(--kit-ease-exit),
+    opacity var(--kit-dur-exit) var(--kit-ease-exit);
+}
+
+.kit-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--kit-dur-shift) var(--kit-ease-shift),
+    opacity var(--kit-dur-enter) var(--kit-ease-enter);
+}
+
+.kit-collapse > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Segmented thumb slides with the shift approximation. */
+.kit-segmented-thumb {
+  transition:
+    transform var(--kit-dur-shift) var(--kit-ease-shift),
+    width var(--kit-dur-shift) var(--kit-ease-shift);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kit-live-pulse::after {
+    animation: none;
+    opacity: 0;
+  }
+
+  .kit-live-line {
+    animation: none;
+  }
+
+  .kit-skeleton {
+    animation: kit-skeleton-in var(--kit-dur-reduced) linear var(--kit-loading-delay) both;
+  }
+
+  .kit-skeleton-delay {
+    animation-name: kit-skeleton-in;
+    animation-duration: var(--kit-dur-reduced);
+    animation-timing-function: linear;
+  }
+
+  .kit-progress-bar {
+    animation: kit-live-line 1.8s ease-in-out infinite;
+    transform: none;
+    width: 100% !important;
+  }
+
+  .kit-collapse,
+  .kit-collapse[data-open="true"] {
+    transition: opacity var(--kit-dur-reduced) linear;
+  }
+
+  .kit-segmented-thumb {
+    transition: none;
+  }
+}

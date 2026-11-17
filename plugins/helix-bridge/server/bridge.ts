@@ -206,7 +206,8 @@ export class Bridge {
             source = "explicit";
           }
         }
-        if (!threadId && env) {
+        // Test instances (the mock bridge) are never mapped by workspace.
+        if (!threadId && env && !summary.test) {
           threadId = await this.latestThreadIn(env.id);
           if (threadId) source = "environment";
         }

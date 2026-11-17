@@ -24,11 +24,13 @@ import { INSTRUCTIONS, TOOL_NAMES, registerTools } from "./server/tools";
 
 export { rpcContract } from "./server/contract";
 export type { AppInstance, Position } from "./server/contract";
+export type { GhosttyConfig } from "./shared/host-contract";
 
 export const SKILL_NAME = "helix-bridge";
 const RECONCILE_MS = 30_000;
 const POSITION_INTERVAL_MS = 120;
 export const TERMINAL_TITLE = "Helix";
+export const POSITION_PROVIDER = "position";
 
 /** The plugin directory: the source tree, or the parent of dist/ for a bundle. */
 function pluginRoot(): string {
@@ -66,7 +68,10 @@ export default async function plugin(bb: BbPluginApi) {
     bridgeDir: async () => (await settings.get()).bridgeDir,
     log: (message) => bb.log.warn(message),
     onChange: (kind) => {
-      if (kind === "structure") bb.rpc.experimental_invalidate([tags.instances]);
+      if (kind === "structure") {
+        bb.rpc.experimental_invalidate([tags.instances]);
+        bb.realtime.publish("instances", {});
+      }
       schedulePositions();
     },
   });
@@ -252,6 +257,26 @@ export default async function plugin(bb: BbPluginApi) {
 
   registerCli(bb, service);
   registerTools(bb, service);
+
+  // The editor position on outgoing messages: the composer keeps a "Helix"
+  // pill in the draft (its toggle), and this resolves it at send time into
+  // one agent-only line. Resolve never throws, so it can never block a send.
+  bb.ui.registerMentionProvider({
+    id: POSITION_PROVIDER,
+    label: "Helix",
+    search: async ({ threadId }) => {
+      if (!threadId || (await service.instancesForThread(threadId)).length === 0) return [];
+      return [{ id: threadId, title: "Helix position", subtitle: "The file and line you are on, attached when you send", icon: "Code" }];
+    },
+    resolve: async (itemId) => {
+      if (!/^[A-Za-z0-9_-]{1,64}$/u.test(itemId)) return { context: "Helix editor position: not available." };
+      try {
+        return { context: await service.positionLine(itemId) };
+      } catch {
+        return { context: "Helix editor position: not available." };
+      }
+    },
+  });
 
   // Tools are offered only to a thread a connected Helix serves. bb builds a
   // session's tool list when the session starts, so a thread that started

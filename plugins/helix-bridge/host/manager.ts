@@ -518,6 +518,7 @@ function emptySummary(id: string, registry: RegistryFile): InstanceSummary {
     cwd: registry.cwd ?? null,
     workspaceRoot: registry.workspaceRoot ?? null,
     env,
+    test: registry.test === true,
     status: "connecting",
     protocol: registry.protocol ?? null,
     capabilities: [],

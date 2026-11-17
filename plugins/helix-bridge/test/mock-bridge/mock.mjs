@@ -356,6 +356,10 @@ export async function startMockBridge(options) {
     cwd: editor.cwd,
     workspaceRoot: editor.workspaceRoot,
     env: options.env ?? {},
+    // Not part of PROTOCOL.md: marks a test instance so bb never maps it to a
+    // thread through its workspace. It binds only through an explicit
+    // BB_THREAD_ID or \`bb hx bind\`.
+    test: true,
   };
   const tmp = `${registryPath}.tmp`;
   writeFileSync(tmp, JSON.stringify(registry, null, 2));
