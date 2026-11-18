@@ -261,6 +261,32 @@ describe("the file tree", () => {
     expect(tree.list().textContent).toContain("Nothing matches “zzz”");
   });
 
+  it("opens a result with l as it does outside a search: a file in Helix, a folder by leaving the search on it", async () => {
+    const tree = await mount();
+    await keys(tree, "G", "k", "k", "k", "l", "j", "l");
+    await keys(tree, "g", "g");
+    // A file: Enter hands the keyboard to the results, then l opens it.
+    await tree.press("/");
+    await tree.type("tok", tree.search());
+    expect(document.querySelector("[data-files-search-hint]")?.textContent).toContain("to the results");
+    await tree.press("Enter", {}, tree.search());
+    expect(document.activeElement).toBe(tree.list());
+    expect(tree.cursor()).toBe("services/auth/token.go");
+    await tree.press("l");
+    expect(tree.source.calls.filter((c) => c.method === "open").map((c) => c.path)).toEqual(["services/auth/token.go"]);
+    expect(tree.onLeave).toHaveBeenCalledTimes(1);
+    // A folder: l leaves the search on it, open, with everything in it showing (as Enter does).
+    await tree.press("/");
+    await tree.type("auth", tree.search());
+    await tree.press("Enter", {}, tree.search());
+    expect(tree.cursor()).toBe("services/auth");
+    expect(tree.paths()).not.toContain("services/auth/token.go");
+    await tree.press("l");
+    expect(tree.search().value).toBe("");
+    expect(tree.cursor()).toBe("services/auth");
+    expect(tree.paths()).toEqual(expect.arrayContaining(["services/auth/token.go", "services/auth/session.go", "docs"]));
+  });
+
   it("matches the parts of a query in order", () => {
     const match = matcher("ses go")!;
     expect(match("session.go")).toEqual([0, 3, 8, 10]);

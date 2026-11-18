@@ -704,4 +704,12 @@ conservatively. Newest last.
     repeated report changes nothing in Helix. Checked in a pty against the
     owner's build: CSI O gives the underline (`CSI 4 q`), CSI I takes it
     away.
+106. **In a search's results, `l` is Enter** (the owner: "in search I cannot
+    use l to open, it makes me use Enter, which is inconsistent"). On a file
+    `l` already opened it. On a folder it only opened the folder, and a
+    search shows a folder's matches and nothing else, so nothing happened;
+    now it leaves the search on that folder, opened, as Enter does. While
+    the field has the keyboard a letter is part of the search, `l` too, so
+    the field says how to get to the results ("Enter to the results"),
+    where every key is the tree's again.
 

@@ -715,7 +715,9 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
   };
   const right = () => {
     if (!current) return;
-    if (current.kind === "file") return enter();
+    // In a search's results a folder shows only what matched: opening it there
+    // would show nothing, so `l` does what Enter does (out of the search, on it, open).
+    if (current.kind === "file" || searching) return enter();
     if (!current.open) return openFolder(current.path);
     const next = rows[at + 1];
     if (next?.type === "entry" && next.depth > current.depth) setCursor(next.path);
@@ -1097,8 +1099,14 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
                 focusList();
               }
             }}
-            className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            className="peer h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
           />
+          {query ? (
+            // While typing, letters are the search's: Enter hands the keyboard to the results, where every key is the tree's again.
+            <span className="hidden shrink-0 items-center gap-1 text-[11px] text-muted-foreground peer-focus:flex" title="Enter or the down arrow: into the results, where j, k, l and the rest work as always" data-files-search-hint>
+              <Kbd>↵</Kbd> to the results
+            </span>
+          ) : null}
           {query ? (
             <button type="button" aria-label="Clear the search" title="Clear the search (Escape)" onClick={() => (endSearch(false), focusList())} className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground">
               <UiGlyph name="close" className="size-3" />
