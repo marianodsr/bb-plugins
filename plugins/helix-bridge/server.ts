@@ -22,7 +22,6 @@ import { Follower } from "./server/follow";
 import { AgentWatcher } from "./server/watch";
 import { displayPath, lastLine, rootsOf } from "./server/format";
 import { SendHandler } from "./server/sends";
-import { Tree } from "./server/tree";
 import { Reviews, type ReviewDeps } from "./server/review";
 import { HelixService } from "./server/service";
 import { MIGRATIONS, Store } from "./server/store";
@@ -49,7 +48,7 @@ export default async function plugin(bb: BbPluginApi) {
     hxbPath: { type: "string", label: "Editor binary", description: "The Helix fork to run, a name on PATH or an absolute path.", default: "hxb" },
     followAgent: { type: "boolean", label: "Follow the agent", description: "When a turn ends, give Helix the list of places the agent changed (:bb-next walks it).", default: true },
     agentTools: { type: "string", label: "Agent tools", description: "Helix tools to offer agents, by name, separated by commas: show, tour, selection, query, diagnostics, review, edit, panes, command. Empty (the default) offers none: agents use bb hx, taught by the skill, which costs no context until used.", default: "" },
-    treeStaysOpen: { type: "boolean", label: "Keep the file tree open", description: "Keep the file tree showing after you open a file from it. Off: opening a file closes the tree and puts you in Helix.", default: false },
+    treeStaysOpen: { type: "boolean", label: "Keep the rail open after opening a file", description: "Opening a file from the rail's file tree keeps the rail showing. Off: the rail closes and you are in Helix, on the file.", default: false },
     positionInMessages: { type: "boolean", label: "Attach the editor position to every message", description: "On: messages you send from a thread with a bound Helix carry one line with the file and line you are on, with a chip and toggle above the composer. Off: nothing is added; the composer's Helix button attaches the position to one message.", default: false },
     hud: { type: "boolean", label: "Performance and key HUD", description: "Show key-to-paint timing, redraw time and the last key over the editor surface.", default: false },
     fontFamily: { type: "string", label: "Editor font", description: "Overrides the font from your Ghostty config. Empty uses Ghostty's.", default: "" },
@@ -95,13 +94,6 @@ export default async function plugin(bb: BbPluginApi) {
     host: { call: hostCall },
     reveal: (threadId) => bb.realtime.publish("reveal", { threadId }),
   });
-  const tree = new Tree({
-    sdk: () => bb.sdk,
-    service,
-    hostCall: (method, input, hostId) => hostCall(method, input as Record<string, unknown>, { hostId, timeoutMs: 15_000 }),
-    bridgeDir: async () => (await settings.get()).bridgeDir,
-  });
-
   const files = new Files({
     service,
     hostCall: (method, input, hostId, timeoutMs) => hostCall(method, input, { hostId, timeoutMs }),
@@ -642,9 +634,6 @@ export default async function plugin(bb: BbPluginApi) {
     filesOpen: ({ threadId, path }) => files.open(threadId, path),
     filesAsk: ({ threadId, kind, paths, text }) => files.ask(threadId, kind, paths, text),
     agentFiles: ({ threadId }) => trail.files(threadId),
-    treeTerminal: ({ threadId }) => tree.terminal(threadId),
-    treeReveal: async ({ threadId, path }) => ({ ok: await tree.reveal(threadId, path).catch(() => false) }),
-    treeClose: async ({ threadId }) => ({ closed: await tree.close(threadId).catch(() => false) }),
     editorTerminal: ({ threadId }) => {
       // One session per thread: concurrent opens (page and tab) share one call.
       const running = openingTerminals.get(threadId);
@@ -685,8 +674,6 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   registerCli(bb, service, {
-    // A file chosen in the tree went to Helix: the app moves focus there.
-    treeOpened: (threadId) => bb.realtime.publish("tree-open", { threadId, at: Date.now() }),
     review: (instance, target) => reviews.start(instance, target, { interrupt: "always" }),
   });
   registerTools(bb, service, { review: (instance, target) => reviews.start(instance, target) });
