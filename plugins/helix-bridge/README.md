@@ -52,8 +52,9 @@ keyboard is there. It has the
 thread (and the other threads that have an editor) at the top, then three
 tabs:
 
-- **Files**: the yazi tree (`space e`). Enter opens a file, closes the rail
-  and hands the keyboard to Helix (the setting `treeStaysOpen` keeps it).
+- **Files**: the workspace's tree (`space e`), drawn by the plugin: see
+  "The file tree" below. Enter opens a file, closes the rail and hands the
+  keyboard to Helix (the setting `treeStaysOpen` keeps it).
 - **Changes**: the review. Opening it starts one in Helix (the branch when it
   has commits of its own, else the uncommitted changes); the scope control
   switches between Uncommitted, Branch, PR (when the thread has one) and
@@ -112,7 +113,7 @@ whole set to copy; the hints in the plugin name these keys.
 | Outside Helix | Does |
 |---|---|
 | Escape, in the rail or the chat | Back to Helix (the rail closes) |
-| `1` / `2` / `3`, in the rail | Files, Changes, Comments. In Files they take the place of yazi's own tab keys, except while yazi takes text (a find, a rename), when every key is typed there, Escape included |
+| `1` / `2` / `3`, in the rail | Files, Changes, Comments (not while a field is taking text) |
 | `C`, in the rail | Send to thread |
 | `?`, in the rail | Every key of the tab, and the Helix keys above |
 
@@ -191,23 +192,52 @@ c = "@:bb-comment<ret>"
 
 ## The file tree
 
-With [yazi](https://yazi-rs.github.io) installed (`brew install yazi`; `bb hx
-doctor` checks), the rail's Files tab is a file tree. It works as a picker:
-choose a file (Enter, or your opener key) and it opens in Helix and the rail
-closes, with you in the editor (setting `treeStaysOpen` keeps it showing).
-Escape or `q` closes it too.
+The rail's Files tab is a tree of the thread's workspace that the plugin
+draws itself (bb's own interface, no terminal and nothing to install). It
+is read folder by folder as you open them, on the machine where the
+workspace is; nothing walks or watches the repository. `docs/HELIX_FILES.md`
+in this repository is its design.
 
-| Keys | |
+| Key | Does |
 |---|---|
-| `space e` in Helix (`:bb-files`) | open the tree on the file you are in, focused |
-| Escape or `q` in the tree | close the tree, back to Helix |
+| `j` `k`, arrows | Move. `g g` and `G` (Home, End) go to the ends; Ctrl-d, Ctrl-u, Page Up and Down by half a page |
+| `l` `h`, right and left | Open and close a folder; on a file `l` opens it; `h` goes to the parent |
+| Enter, double click | Open the file in Helix (the rail closes), or open and close a folder |
+| `/` | Search: typing narrows the tree to what matches, in the folders already opened; Escape clears it |
+| `a`, `A` | New file, new folder, typed in place; `a/b/c.go` makes the folders on the way |
+| `r`, F2 | Rename in place |
+| `y` `x` `p` (Cmd+C, Cmd+X, Cmd+V) | Copy, mark to move, paste into the cursor's folder; a taken name gets `_1` |
+| Space; Shift with `j` `k` | Select several |
+| `d`, Backspace; `D` | To the trash, after a confirmation; delete for good |
+| `.` | Show or hide dot files |
+| `c` | Copy the path |
+| Right click, menu key | The same things by name |
+| Escape | Step back (a field, the search, a pending paste, a selection), then close the rail |
 
-Your own yazi
-configuration applies (keymap, theme, plugins, `yazi.toml`) and is never
-written: the tree runs with a generated configuration directory in the
-plugin's data that links yours and adds one column and the "Open in Helix"
-opener only when your `yazi.toml` does not set them. Quitting Helix closes
-the tree.
+Only in bb, with the thread's agent (each is something you do on a row;
+nothing reaches the agent otherwise):
+
+| Key | Does |
+|---|---|
+| `s`, or drag rows onto the chat | Send to thread: the rows become file and folder mentions in the thread's composer, and you write the rest |
+| `i` | Ask: a box on the row with a field and ready questions; Enter sends the message to the thread and opens the chat |
+| Tab in the new-file field | "What should it contain?": with a description, the thread is asked to write the file; the row waits as "being written" and Helix opens the file when it exists |
+| `t` | Narrow the tree to the files the agent changed: live while its turn runs, and the turn before |
+| A folder's row menu | New thread here: bb's new-thread screen with the folder mentioned |
+
+Files of the active review carry their status letter, a dot when not viewed
+yet and the count of their open comments; closed folders add up what they
+hold. The agent's trail comes from the turn's own events, so a file the
+agent creates or removes with a shell command shows only if Helix has it
+open. The tree remembers its open folders and its cursor per thread.
+
+Changes are refused outside the workspace and inside `.git`, and nothing is
+ever replaced. The trash is the system's (`~/.Trash` on macOS, `gio trash`
+elsewhere).
+
+Outside bb, in a plain terminal, `:bb-files` runs the file manager the
+fork's `file-manager` setting names (yazi by default); that is the fork's
+and has nothing to do with this tree.
 
 ## Your position in messages
 

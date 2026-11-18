@@ -4,7 +4,7 @@
 // editor page and the thread's Helix tab); only the focused one sends resize,
 // so they never fight over the size.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { experimental_copyToClipboard as copyToClipboard, experimental_usePluginId as usePluginId, useRealtime, useSdk, useSettings } from "@get-bb/plugin-sdk/app";
+import { experimental_copyToClipboard as copyToClipboard, useRealtime, useSdk } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { EmptyState, Skeleton } from "../../kit";
@@ -15,31 +15,9 @@ import { createRenderer, type RendererDiagnostics, type SurfaceFont, type Termin
 import { TerminalStream, exitOutcome } from "../terminal/stream";
 import { editorFocus as editorFocusers, railFocus, railHasFocus, railSheet, railTab } from "../rail/railStore";
 import { CommentBox, type CommentRequest } from "./CommentBox";
-import { TreePane, type TreeHandle } from "./TreePane";
 
 /** Pane controls of the visible surfaces, by thread, for the app's commands. */
 export const surfaceControls = new Map<string, { toggleTree(): void; switchFocus(): void }>();
-
-const TREE_MIN = 160;
-const TREE_MAX = 640;
-/** Narrower surfaces start with the tree hidden. */
-const TREE_DEFAULT_MIN_SURFACE = 960;
-
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStored(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // not remembered
-  }
-}
 
 /** The last few KB a session printed, for the exit report. */
 class OutputTail {
@@ -277,8 +255,6 @@ export interface EditorSurfaceProps {
   active: boolean;
   autoFocus?: boolean;
   className?: string;
-  /** Show the file tree pane (the editor page; not the thread's quick-look tab). */
-  tree?: boolean;
   /**
    * Helix exited cleanly or bb closed its terminal: the session is already
    * closed; the caller takes the surface away (back to the thread, or close
@@ -287,7 +263,7 @@ export interface EditorSurfaceProps {
   onClosed(): void;
 }
 
-export function EditorSurface({ threadId, active, autoFocus, className, tree, onClosed }: EditorSurfaceProps) {
+export function EditorSurface({ threadId, active, autoFocus, className, onClosed }: EditorSurfaceProps) {
   const setup = useSetup();
   const ghostty = useGhostty();
   const binaryMissing = setup.data?.checks.find((c) => c.id === "binary" && c.level === "error") ?? null;
@@ -298,14 +274,13 @@ export function EditorSurface({ threadId, active, autoFocus, className, tree, on
     if (ghostty.error) return <SurfaceError message={`Could not read the editor settings: ${ghostty.error}`} onRetry={ghostty.refetch} className={className} />;
     return <SurfaceSkeleton className={className} />;
   }
-  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} tree={tree ?? false} config={ghostty.data} className={className} onClosed={onClosed} />;
+  return <Session threadId={threadId} active={active} autoFocus={autoFocus ?? false} config={ghostty.data} className={className} onClosed={onClosed} />;
 }
 
 function Session({
   threadId,
   active,
   autoFocus,
-  tree,
   config,
   className,
   onClosed,
@@ -314,7 +289,6 @@ function Session({
   threadId: string;
   active: boolean;
   autoFocus: boolean;
-  tree: boolean;
   config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; faces?: SurfaceFont["faces"]; boldIsBright: boolean | null; optionAsAlt: OptionAsAlt; hud: boolean; background: string | null; foreground: string | null };
   className?: string;
 }) {
@@ -327,11 +301,6 @@ function Session({
   const [exit, setExit] = useState<{ code: number | null; lastLines: string } | null>(null);
   const onClosedRef = useRef(onClosed);
   onClosedRef.current = onClosed;
-  const closeTreeRef = useRef<() => void>(() => {});
-  const { values: settingValues } = useSettings();
-  const treeStaysOpen = settingValues?.treeStaysOpen === true;
-  /** A path `:bb-files` asked for while the tree was hidden: revealed once it is up. */
-  const pendingReveal = useRef<string | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<RendererDiagnostics | null>(null);
   const [grid, setGrid] = useState<{ cols: number; rows: number } | null>(null);
@@ -342,30 +311,8 @@ function Session({
   activeRef.current = active;
   const optionRef = useRef<OptionAsAlt>(config.optionAsAlt);
   optionRef.current = config.optionAsAlt;
-  const pluginId = usePluginId();
   const surface = useRef<HTMLDivElement>(null);
-  const treeHandle = useRef<TreeHandle | null>(null);
   const editorFocus = useRef<(() => void) | null>(null);
-  const visibleKey = `${pluginId}.tree.visible`;
-  const widthKey = `${pluginId}.tree.width`;
-  const [treeOpen, setTreeOpen] = useState<boolean | null>(() => {
-    const stored = readStored(visibleKey);
-    return stored === null ? null : stored === "1";
-  });
-  const [treeWidth, setTreeWidth] = useState(() => Math.min(TREE_MAX, Math.max(TREE_MIN, Number(readStored(widthKey)) || 260)));
-  // Not chosen yet in this browser: shown on wide surfaces only.
-  useLayoutEffect(() => {
-    if (treeOpen !== null || !tree) return;
-    setTreeOpen((surface.current?.clientWidth ?? 0) >= TREE_DEFAULT_MIN_SURFACE);
-  }, [tree, treeOpen]);
-  const showTree = tree && treeOpen === true;
-  const setTreeVisible = (visible: boolean) => {
-    setTreeOpen(visible);
-    writeStored(visibleKey, visible ? "1" : "0");
-    if (!visible) editorFocus.current?.();
-  };
-  closeTreeRef.current = () => void rpc.call("treeClose", { threadId }).catch(() => {});
-
   // The thread's terminal session, started on first use.
   useEffect(() => {
     let cancelled = false;
@@ -392,7 +339,7 @@ function Session({
     if (!element || !terminalId) return;
     let detached = false;
     // The editor owns its size while focus is anywhere in this surface (the
-    // tree beside it changes its width); another surface showing the same
+    // rail over it never changes its width); another surface showing the same
     // session (the thread's tab) never fights it.
     // With the rail in bb's sidebar, focus is often in the rail: the page's
     // editor owns its size unless another Helix surface has the focus.
@@ -415,8 +362,6 @@ function Session({
         window.dispatchEvent(new CustomEvent("helix-bridge:grid", { detail: { threadId, cols, rows } }));
       },
       ended: (outcome, session, screen) => {
-        // The tree goes with the editor.
-        closeTreeRef.current();
         if (outcome === "close") {
           onClosedRef.current();
           return;
@@ -543,40 +488,11 @@ function Session({
     setCommentRequest(message.request);
   });
 
-  // :bb-files (space e in the owner's keys): show the tree on that file and focus it.
-  useRealtime("files", (payload: unknown) => {
-    const request = payload as { threadId?: string; path?: string | null } | null;
-    if (!tree || !active || request?.threadId !== threadId) return;
-    const path = request.path ?? null;
-    if (showTree && treeHandle.current) {
-      if (path) treeHandle.current.reveal(path);
-      treeHandle.current.focus();
-      return;
-    }
-    pendingReveal.current = path;
-    setTreeOpen(true);
-  });
-
-  // A file opened from the tree: back to the editor, and the tree closes
-  // (it is a picker) unless the user keeps it open.
-  const treeOpened = () => {
-    if (!treeStaysOpen) setTreeVisible(false);
-    else editorFocus.current?.();
-  };
-
-  // Palette commands (app.tsx): show or hide the tree, move focus between panes.
+  // Palette commands (app.tsx): show or hide the files, move focus between the rail and Helix.
   const controls = useRef({ toggleTree: () => {}, switchFocus: () => {} });
   controls.current = {
-    // The rail's Files tab (the tree), a sheet over the editor.
+    // The rail on Files (the tree), or away when it is showing.
     toggleTree: () => {
-      if (tree) {
-        if (showTree) setTreeVisible(false);
-        else {
-          setTreeVisible(true);
-          window.setTimeout(() => treeHandle.current?.focus(), 300);
-        }
-        return;
-      }
       if (railSheet.get() === threadId) {
         railSheet.set(null);
         editorFocus.current?.();
@@ -589,17 +505,12 @@ function Session({
     // straight to Helix.
     switchFocus: () => {
       const inEditor = Boolean(surface.current?.contains(document.activeElement));
-      if (!tree && !inEditor && !railHasFocus.get(threadId)?.()) {
-        editorFocus.current?.();
-        return;
-      }
-      if (showTree && !treeHandle.current?.focused()) treeHandle.current?.focus();
-      else if (!tree && railHasFocus.get(threadId)?.()) {
+      if (railHasFocus.get(threadId)?.()) {
         if (railSheet.get() === threadId) railSheet.set(null);
         editorFocus.current?.();
-      } else if (!tree && railSheet.get() === threadId) railFocus.get(threadId)?.();
-      else if (!tree) railSheet.set(threadId);
-      else editorFocus.current?.();
+      } else if (!inEditor) editorFocus.current?.();
+      else if (railSheet.get() === threadId) railFocus.get(threadId)?.();
+      else railSheet.set(threadId);
     },
   };
   useEffect(() => {
@@ -611,54 +522,9 @@ function Session({
     };
   }, [threadId, active]);
 
-  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = treeWidth;
-    let width = startWidth;
-    const move = (e: PointerEvent) => {
-      width = Math.min(TREE_MAX, Math.max(TREE_MIN, startWidth + e.clientX - startX));
-      setTreeWidth(width);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      writeStored(widthKey, String(Math.round(width)));
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-
   return (
     <div ref={surface} className={cn("relative flex min-h-0 flex-1 flex-col bg-background", className)} data-helix-surface={threadId}>
       <div className="flex min-h-0 flex-1">
-        {showTree ? (
-          <>
-            <TreePane
-              threadId={threadId}
-              width={treeWidth}
-              config={config}
-              handle={treeHandle}
-              onQuit={() => setTreeVisible(false)}
-              onOpened={treeOpened}
-              onReady={() => {
-                const path = pendingReveal.current;
-                pendingReveal.current = null;
-                if (path) treeHandle.current?.reveal(path);
-                treeHandle.current?.focus();
-              }}
-            />
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize the file tree"
-              tabIndex={-1}
-              onPointerDown={startDrag}
-              className="w-1 shrink-0 cursor-col-resize bg-border/60 transition-colors duration-[120ms] hover:bg-ring/60"
-              data-helix-tree-divider
-            />
-          </>
-        ) : null}
         <div ref={host} className="helix-surface min-h-0 min-w-0 flex-1 overflow-hidden" data-helix-terminal />
       </div>
       {commentRequest && host.current ? (

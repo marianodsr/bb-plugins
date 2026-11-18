@@ -654,3 +654,23 @@ conservatively. Newest last.
     the warm cache to its first painted frame: 56 ms median, about 23 ms of
     it the one style pass of putting the rows into bb's page (97); it was
     38 to 45 ms before the thread's marks added three elements to a row.
+102. **The tree is the rail's Files tab; yazi is gone from the plugin**
+    (integration of 95 to 101). `app/files/rpcSource.ts` is the tree's
+    `FilesSource` and the server's half of its `ThreadLink` over `filesList`,
+    `filesOp`, `filesOpen`, `filesAsk`, `agentFiles` and the realtime
+    `files-changed` and `agent-files`; `useBbThreadLink` adds bb's composer
+    and navigation. The tab mounts with the rail and unmounts with it (its
+    listings and its place are kept in module stores, 99), so nothing of it
+    is alive while another tab shows. `space e` names Helix's file by its
+    full path; the tab turns it into the workspace's own once the first
+    listing has said where the workspace is. Removed: the yazi pane
+    (`TreePane`), its session, configuration and opener on the server and
+    the host, the doctor's check, `bb hx tree-open`, and the in-page tree in
+    `EditorSurface` that nothing drew since 90; 92 (keys taken from yazi)
+    no longer applies. Measured on the owner's machine through bb, from the
+    page: a listing takes 29 to 38 ms end to end (81 ms the first), of which
+    the host's own read is under 1 ms; the rest is bb's RPC path.
+    `/plugins/helix-bridge/editor/~files/<threadId>` shows a real thread's
+    tree with no Helix beside it and those times, for checks that must not
+    attach to anyone's editor.
+
