@@ -68,6 +68,16 @@ function LiveFiles({ threadId }: { threadId: string | null }) {
     const timer = window.setInterval(() => setTimings(listTimings.map((t) => `${t.ms.toFixed(0)} ms (${t.dirs})`).join(", ")), 500);
     return () => window.clearInterval(timer);
   }, []);
+  // "Back to Helix" has no Helix here: the tree stands in for it, so the way
+  // back from the chat can be checked on this page too.
+  useEffect(() => {
+    if (!threadId) return;
+    const focus = () => handle.current?.focus();
+    editorFocus.set(threadId, focus);
+    return () => {
+      if (editorFocus.get(threadId) === focus) editorFocus.delete(threadId);
+    };
+  }, [threadId]);
   if (!threadId) return <PickThread />;
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center gap-2 bg-muted/40 p-6">
@@ -257,17 +267,22 @@ function PickThread() {
 
 /** The page's fixed side-panel tab: the thread's conversation. */
 export function ChatTab({ subPath }: { subPath: string }) {
-  const threadId = threadFromSubPath(subPath);
+  // The live preview of a thread's tree (`~files/<threadId>`) has that thread's chat beside it too.
+  const threadId = threadFromSubPath(subPath.startsWith(`${FILES_PREVIEW_PATH}/`) ? subPath.slice(FILES_PREVIEW_PATH.length + 1) : subPath);
   if (!threadId) return <EmptyState icon="MessageSquare" title="No thread" description="Open the editor from a thread to chat beside it." />;
-  // Escape in the chat goes back to Helix, once bb has had its own use of it
-  // (closing a menu, a dialog).
+  // Escape in the chat goes back to Helix. bb's composer takes the key first:
+  // it closes a menu and keeps the keyboard, or it lets go of the keyboard
+  // (and marks the event handled either way). So the rule is what is left
+  // afterwards: when Escape left the keyboard nowhere, Helix takes it.
   return (
     <div
       className="contents"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return;
-        if (document.querySelector("[role='listbox'], [role='menu'], [role='dialog']")) return;
-        editorFocus.get(threadId)?.();
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        window.setTimeout(() => {
+          const active = document.activeElement;
+          if (!active || active === document.body) editorFocus.get(threadId)?.();
+        }, 0);
       }}
     >
       <ThreadChat key={threadId} threadId={threadId} variant="compact" />

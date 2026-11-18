@@ -683,4 +683,25 @@ conservatively. Newest last.
     `g g`, a click), on top of what was already selected. `v` again or
     Escape stops and keeps the rows; an action that takes the selection
     (copy, cut, trash, send, ask) ends it. The foot says it while it lasts.
+104. **Escape in the chat goes back to Helix by what it leaves, not by who
+    handled it** (corrects 91, which never worked). bb's composer takes
+    Escape first, marks the event handled, and either closes a menu and
+    keeps the keyboard or lets go of it (focus on the page's body). The
+    first version skipped handled events, which is every one. Now: a moment
+    after an Escape in the chat, if the keyboard is nowhere, Helix takes it.
+    Seen in bb on the live preview route (`~files/<thread>`, where the tree
+    stands in for Helix): before, focus stayed on the body; after, it is in
+    the stand-in.
+105. **The surface reports focus to Helix itself.** Helix draws its cursor
+    as an underline while it believes the terminal is out of focus, and
+    only the terminal's reports (CSI I, CSI O) tell it. The terminal library
+    sends them only if it saw Helix ask (mode 1004), and a surface attached
+    to a Helix that is already running did not: the request is not in the
+    output it replays. So after a reload of the window, or a surface made
+    anew, Helix was told the focus left and never that it came back, and
+    the underline stayed in normal mode. The surface now sends both reports
+    on its own focus events (and once when it comes up already focused); a
+    repeated report changes nothing in Helix. Checked in a pty against the
+    owner's build: CSI O gives the underline (`CSI 4 q`), CSI I takes it
+    away.
 

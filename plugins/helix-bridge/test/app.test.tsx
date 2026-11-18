@@ -121,22 +121,37 @@ describe("keys", () => {
     for (const row of HELIX_KEYS) for (const combo of row.keys) expect(combo).toMatch(/^space\+(e|u\+(shift\+)?[a-z])$/u);
   });
 
-  it("goes back to Helix on Escape in the chat, unless bb used the key", async () => {
+  it("goes back to Helix when Escape in the chat left the keyboard nowhere", async () => {
     const app = await loadPluginApp(() => import("../app"));
     const { editorFocus } = await import("../app/rail/railStore");
     let focused = 0;
     editorFocus.set("thr_a", () => void focused++);
     const tab = app.tabs.find((t) => t.id === "chat")!;
     const view = await renderSlot(tab as never, { subPath: "thr_a" } as never, {});
-    const inside = view.container.querySelector(".contents")!.firstElementChild ?? view.container.querySelector(".contents")!;
-    inside.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    const wrapper = view.container.querySelector(".contents")!;
+    const field = document.createElement("textarea");
+    wrapper.appendChild(field);
+    const escape = () => new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+    // bb's composer lets go of the keyboard on Escape and marks the event handled: Helix takes it.
+    field.focus();
+    const handled = escape();
+    field.addEventListener("keydown", (event) => event.key === "Escape" && (event.preventDefault(), field.blur()), { once: true });
+    field.dispatchEvent(handled);
+    await later();
     expect(focused).toBe(1);
-    const used = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-    used.preventDefault();
-    inside.dispatchEvent(used);
-    inside.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
+    // It closed a menu and kept the keyboard: nothing moves.
+    field.focus();
+    field.dispatchEvent(escape());
+    await later();
+    expect(focused).toBe(1);
+    // Other keys never do.
+    field.blur();
+    wrapper.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
+    await later();
     expect(focused).toBe(1);
     editorFocus.delete("thr_a");
+    field.remove();
   });
 });
 

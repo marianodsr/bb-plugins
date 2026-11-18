@@ -390,7 +390,23 @@ function Session({
       const { cols, rows } = entry.renderer.size();
       entry.stream.resize(cols, rows, true);
     };
-    element.addEventListener("focusin", claim);
+    // Helix shows its cursor as an underline while it believes the terminal is
+    // out of focus, and it knows only what the terminal reports (CSI I, CSI O).
+    // A surface attached to a Helix that is already running never saw Helix
+    // ask for those reports (the request is long gone from the output it
+    // replays), so it would not say when focus came back and the underline
+    // stayed. The surface says it itself, both ways; Helix takes a report it
+    // already had as nothing new.
+    const focusIn = () => {
+      claim();
+      entry.stream.input("\x1b[I");
+    };
+    const focusOut = (event: FocusEvent) => {
+      if (event.relatedTarget instanceof Node && element.contains(event.relatedTarget)) return;
+      entry.stream.input("\x1b[O");
+    };
+    element.addEventListener("focusin", focusIn);
+    element.addEventListener("focusout", focusOut);
     let removeDiagnostics: (() => void) | null = null;
     void entry.ready.then(
       (created) => {
@@ -405,6 +421,8 @@ function Session({
         owner.grid(cols, rows);
         editorFocus.current = () => created.focus();
         if (activeRef.current) editorFocusers.set(threadId, () => created.focus());
+        // Focus was already here when the surface came up: no event will say so.
+        if (element.contains(document.activeElement)) entry.stream.input("\x1b[I");
         setDiagnostics(created.diagnostics());
         removeDiagnostics = created.onDiagnostics(() => !detached && setDiagnostics(created.diagnostics()));
         // With the HUD on, drivers can also read the screen (status line included).
@@ -452,7 +470,8 @@ function Session({
     return () => {
       detached = true;
       if (hudTimer) window.clearInterval(hudTimer);
-      element.removeEventListener("focusin", claim);
+      element.removeEventListener("focusin", focusIn);
+      element.removeEventListener("focusout", focusOut);
       removeDiagnostics?.();
       if (entry.owner === owner) entry.owner = null;
       entry.container.remove();
