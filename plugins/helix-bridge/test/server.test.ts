@@ -1,6 +1,6 @@
 // The server end to end in-process: bb's fake plugin host, its host-RPC
 // driver wired to a real InstanceManager, and the mock bridge behind it.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,8 @@ import { commentItems, type ReviewComment } from "../server/annotations";
 import { editedPaths, placesOf, revealOf } from "../server/watch";
 import { OPENER_SCRIPT, treeYaziToml } from "../host/yazi";
 import { revParse as gitRevParse, subject as gitSubject } from "../host/git";
+import { applyOp, listDirs } from "../host/files";
+import type { FileOp } from "../app/files/types";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -48,6 +50,8 @@ let manager: InstanceManager;
 let fake: ReturnType<typeof createFakePluginHost>;
 let sent: { threadId: string; text: string }[];
 let reconcile: { controller: AbortController; done: Promise<void> };
+/** thr_files's workspace (env_files): a temporary folder the file tree may change. */
+let filesRoot: string;
 
 const textOf = (result: unknown) => ((result as { content: { text: string }[] }).content ?? []).map((c) => c.text).join("\n");
 
@@ -58,6 +62,7 @@ async function teardown() {
   manager.dispose();
   await mock.stop();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(filesRoot, { recursive: true, force: true });
 }
 
 let capabilities: string[] | null = null;
@@ -78,6 +83,7 @@ async function setupWithCapabilities(caps: string[]) {
 
 async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" }, extraSdk: Record<string, Record<string, unknown>> = {}) {
   dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hxs-"));
+  filesRoot = realpathSync(mkdtempSync(join(tmpdir(), "hxs-files-")));
   mock = await startMockBridge({ dir, workspace, open: ["main.go"], pid: process.pid, env, ...(capabilities ? { capabilities } : {}) });
   sent = [];
   fake = createFakePluginHost({
@@ -88,11 +94,11 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
       hosts: { list: async () => [makeHostResponse({ id: HOST, status: "connected" })] },
       environments: {
         list: async () => [{ id: "env_test", hostId: HOST, path: workspace }] as never,
-        get: async ({ environmentId }: { environmentId: string }) => ({ id: environmentId, hostId: HOST, path: environmentId === "env_test" ? workspace : "/elsewhere" }) as never,
+        get: async ({ environmentId }: { environmentId: string }) => ({ id: environmentId, hostId: HOST, path: environmentId === "env_test" ? workspace : environmentId === "env_files" ? filesRoot : "/elsewhere" }) as never,
       },
       threads: {
         // thr_nobody lives in another environment; every other thread in env_test.
-        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: threadId === "thr_nobody" ? "env_other" : "env_test", title: `Thread ${threadId}` }),
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: threadId === "thr_nobody" ? "env_other" : threadId === "thr_files" ? "env_files" : "env_test", title: `Thread ${threadId}` }),
         list: async () => [makeThreadResponse({ id: "thr_env", environmentId: "env_test" })],
         send: async (args: { threadId: string; input: { text: string }[] }) => {
           sent.push({ threadId: args.threadId, text: args.input[0]!.text });
@@ -123,6 +129,11 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
           if (args.op === "subject") return { subject: rev ? await gitSubject(cwd, rev) : "", error: null };
           throw new Error(`unexpected gitRead ${String(args.op)}`);
         }
+        case "filesList":
+          return listDirs(String(args.root), args.dirs as string[]);
+        case "filesOp":
+          // The trash is the test's own folder.
+          return applyOp(String(args.root), args.op as FileOp, { trashDir: join(filesRoot, "..") });
         default:
           throw new Error(`unexpected host call ${method}`);
       }
@@ -887,6 +898,48 @@ describe("the file tree", () => {
     expect(result.exitCode).toBe(0);
     await until(() => (mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path === join(workspace, "util.go"));
     expect(fake.harness.inspection.realtimeSignals.some((s) => s.channel === "tree-open" && (s.payload as { threadId: string }).threadId === "thr_term")).toBe(true);
+  });
+});
+
+describe("the native file tree", () => {
+  const filesSignals = () => fake.harness.inspection.realtimeSignals.filter((s) => s.channel === "files-changed").map((s) => s.payload);
+
+  it("lists the thread's workspace, changes it and says which folders changed", async () => {
+    mkdirSync(join(filesRoot, "pkg"));
+    writeFileSync(join(filesRoot, "main.go"), "package main");
+    const listed = await fake.harness.behavior.callRpc("filesList", { threadId: "thr_files", dirs: ["", "pkg"] });
+    expect(listed).toEqual({
+      root: filesRoot,
+      dirs: { "": { entries: [{ name: "pkg", kind: "dir" }, { name: "main.go", kind: "file" }], error: null, truncated: false }, pkg: { entries: [], error: null, truncated: false } },
+    });
+    expect(await fake.harness.behavior.callRpc("filesOp", { threadId: "thr_files", op: { kind: "create", path: "pkg/a/b.go" } })).toEqual({ ok: true, error: null, paths: ["pkg/a/b.go"] });
+    expect(filesSignals()).toEqual([{ threadId: "thr_files", dirs: expect.arrayContaining(["pkg", "pkg/a"]) }]);
+    expect(await fake.harness.behavior.callRpc("filesOp", { threadId: "thr_files", op: { kind: "copy", from: ["main.go"], into: "" } })).toEqual({ ok: true, error: null, paths: ["main_1.go"] });
+    expect(await fake.harness.behavior.callRpc("filesOp", { threadId: "thr_files", op: { kind: "rename", from: "main_1.go", to: "main.go" } })).toEqual({ ok: false, error: "main.go is taken", paths: [] });
+    expect(await fake.harness.behavior.callRpc("filesOp", { threadId: "thr_files", op: { kind: "delete", paths: [".git"] } })).toMatchObject({ ok: false });
+    expect(filesSignals()).toHaveLength(2);
+  });
+
+  it("refuses what the contract does not allow before the host sees it", async () => {
+    await expect(fake.harness.behavior.callRpc("filesList", { threadId: "thr_files", dirs: [] })).rejects.toThrow();
+    await expect(fake.harness.behavior.callRpc("filesList", { threadId: "thr_files", dirs: Array.from({ length: 65 }, (_, i) => `d${i}`) })).rejects.toThrow();
+    await expect(fake.harness.behavior.callRpc("filesOp", { threadId: "thr_files", op: { kind: "chmod", path: "a" } })).rejects.toThrow();
+  });
+
+  it("opens a file in the thread's Helix at once", async () => {
+    expect(await fake.harness.behavior.callRpc("filesOpen", { threadId: "thr_term", path: "util.go" })).toEqual({ ok: true, error: null });
+    await until(() => (mock.control({ cmd: "state" }).state as { focused: { path: string } }).focused.path === join(workspace, "util.go"));
+    expect(await fake.harness.behavior.callRpc("filesOpen", { threadId: "thr_term", path: "../util.go" })).toMatchObject({ ok: false, error: expect.stringMatching(/\.\./u) });
+    expect(await fake.harness.behavior.callRpc("filesOpen", { threadId: "thr_files", path: "main.go" })).toEqual({ ok: false, error: "No Helix is open for this thread" });
+  });
+
+  it("tells the tree to read again when a turn ends there, at most once a second", async () => {
+    const thread = makeThreadResponse({ id: "thr_files", environmentId: "env_files" });
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    expect(filesSignals()).toEqual([{ threadId: "thr_files", dirs: null }]);
+    await until(() => filesSignals().length === 2, 2500);
+    expect(filesSignals()[1]).toEqual({ threadId: "thr_files", dirs: null });
   });
 });
 
