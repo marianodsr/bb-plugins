@@ -2,101 +2,122 @@
 
 The owner's words (2026-11-18): no more yazi for the tree inside bb. A new
 tree, made for bb, that shares the rail. Very fast and snappy. With icons.
-It works like yazi at least for: new files, new folders, moving around,
-search with `/`, and copy and paste of files.
+It can do what yazi does at least for: new files, new folders, moving
+around, search with `/`, and copy and paste of files. Then, the same day:
+"be original, do not copy yazi; I only want the same functionality", and
+"use a style that is not a terminal's".
+
+So this is a piece of bb's own interface, designed for this rail, not a
+terminal program redrawn: bb's type and surfaces, real fields, real
+buttons, a pointer that works as well as the keyboard. yazi is only the
+list of things it must be able to do.
 
 The standing rules still bind: the editor is for the user (no agent tools,
 no context), nothing scans or watches the repository on a timer, keys are
 plain keys in the rail and `space` + a key in Helix (never Cmd+Option or
-Cmd+Shift), a summoned panel closes when something is chosen from it, and
-the rail remembers where it was. The repository this is for is a very large
-Bazel monorepo, mostly Go: nothing may walk it.
+Cmd+Shift; a plain Cmd key that every Mac app has, like Cmd+C, is fine), a
+summoned panel closes when something is chosen from it, and the rail
+remembers where it was. The repository this is for is a very large Bazel
+monorepo, mostly Go: nothing may walk it.
 
 ## What it is
 
-The rail's Files tab stops being a terminal running yazi and becomes a list
-the plugin draws: an expandable tree of the thread's workspace, keyboard
-first, with yazi's keys where yazi has one.
+The rail's Files tab stops being a terminal running yazi and becomes an
+expandable tree of the thread's workspace that the plugin draws.
 
 ```
  Files   Changes 3   Comments 1
+ ┌───────────────────────────────┐
+ │ (search) Search files      /  │  (+file) (+folder)
+ └───────────────────────────────┘
+  v services
+    v auth
+        [go] session.go        M
+        [go] token.go
+    > billing
+  > web
+    [bz] BUILD.bazel
  ─────────────────────────────────
-  services
-    auth
-      session.go            M
-      token.go
-    billing
-  web
-  BUILD.bazel
-  go.mod
- ─────────────────────────────────
- /sess█                    2 of 5
+  2 copied. P pastes into auth   x     (only while something is pending)
 ```
 
-### Keys (focus in the tree)
+### What it does, and how
 
-| Key | Does | yazi |
-|---|---|---|
-| `j` `k` / arrows | down, up | same |
-| `g g`, `G` | first, last row | same |
-| `Ctrl-d`, `Ctrl-u` | half a page down, up | same |
-| `l` / `→` / Enter | a folder: open it (already open: go to its first child). A file: open it in Helix; the rail closes unless `treeStaysOpen` | enter / open |
-| `h` / `←` | an open folder: close it. Otherwise: go to the parent folder's row | leave |
-| `/` | find: type, the cursor jumps to the first row that matches as you type; Enter keeps it, Escape goes back where it was | find |
-| `n`, `N` | next, previous match of the last find | same |
-| `a` | create in the cursor's folder; a name ending in `/` is a folder; `a/b/c.go` makes the folders on the way | same |
-| `r` | rename (the name without its extension is selected) | same |
-| `y` | yank: mark the selection (or the row) to copy | same |
-| `x` | mark it to move | same |
-| `p` | paste into the cursor's folder | same |
-| `Y` or `X` | forget what was yanked | same |
-| Space | select or unselect the row and go down | same |
-| `d` | to the trash, after `y` to confirm | same |
-| `D` | delete for good, after `y` to confirm | same |
-| `.` | show or hide dot files | same |
-| `c c`, `c f`, `c d` | copy the path, the name, the folder's path to the clipboard | same |
-| Escape, `q` | a selection or a yank: forget it. Otherwise close the rail, back to Helix | escape / quit |
-| `1` `2` `3`, `?`, `C` | the rail's own keys keep working | |
+- **Moving.** `j` `k` and the arrows; `h` and `l` (and the left and right
+  arrows) close and open a folder, or go to the parent and to the first
+  child; `g g` and `G`, Home and End; `Ctrl-d` `Ctrl-u`, Page Up and Down.
+  Enter (or a double click) opens a file in Helix, and the rail closes
+  unless `treeStaysOpen`; on a folder it opens or closes it. A click puts
+  the cursor on a row; a click on a folder also opens or closes it.
+- **Search.** `/` puts the keyboard in the search field at the top. Typing
+  narrows the tree to the entries that match (smart case, the parts of the
+  query in order), keeps the folders that hold them, and marks the matched
+  letters in each name. Down or Enter goes into the results; Escape clears
+  the search and puts the cursor back where it was. It searches what is
+  loaded (every folder that has been opened), not the repository: a search
+  of the whole workspace by name is a later step and must not be built now.
+- **New file, new folder.** `a`, or the two buttons beside the search
+  field: a new row appears in place, in the cursor's folder, with a field
+  where the name goes; its icon follows the extension as it is typed. Enter
+  creates it, Escape removes the row. A name ending in `/` (or the folder
+  button, or `A`) makes a folder; `a/b/c.go` makes the folders on the way.
+  The cursor lands on what was made.
+- **Rename.** `r` or F2: the row's name becomes a field in place, the name
+  without its extension selected.
+- **Copy and move.** `y` (or Cmd+C) copies the selection, or the cursor's
+  row; `x` (or Cmd+X) marks it to move; `p` (or Cmd+V) pastes into the
+  cursor's folder. While something is waiting to be pasted, a strip at the
+  foot says what and where it would go, with a way to drop it; rows marked
+  to move are dimmed. A taken name gets `_1` before its extension.
+- **Selecting several.** Space toggles the row and goes down; Shift with
+  `j` `k` or the arrows extends; Cmd-click and Shift-click with the
+  pointer. Escape drops the selection.
+- **Trash and delete.** `d` or Backspace asks in a bar at the foot, in
+  words ("Move session.go to the trash?"), with the two answers as buttons
+  that have keys (Enter and Escape). `D` deletes for good and looks like it.
+- **Dot files.** `.` shows or hides them (also in the row menu).
+- **Paths.** `c` copies the row's path to the clipboard.
+- **The row menu.** A right click (or the menu key) on a row offers the
+  same things by name: New file, New folder, Rename, Copy, Cut, Paste,
+  Copy path, Move to trash. Every item shows its key.
+- **Leaving.** Escape steps back one thing at a time (a field, the search,
+  a pending paste, a selection) and then closes the rail, back to Helix.
+- The rail's own keys (`1` `2` `3`, `?`, `C`) keep working whenever no
+  field is taking text.
 
 "The cursor's folder" is the folder the cursor is on when it is open, else
 the folder that holds the cursor's row.
 
-Find is yazi's find, not a search of the repository: it looks at the rows
-that are showing (every open folder), smart case, substring. A search of
-the whole workspace by name is a later step and must not be built now.
+### How it looks
 
-### What it shows
-
-- One row per entry: indentation by depth, a chevron for folders, an icon
-  by kind of file, the name. Dot files are hidden until `.`.
+- bb's interface type for names, not the code font; rows of one fixed
+  height; depth shown by indentation with hairline guides; a chevron that
+  turns for folders. Hover, cursor and selection are three different,
+  quiet states (host tokens). The cursor's row is plain to see from across
+  the room.
 - Files of the review that is active (the Changes tab's data, already in
   memory: `useChanges`) carry their status letter in the review's colours.
   No git of the tree's own.
-- Yanked rows are marked (copy and move look different), selected rows too.
-- The prompt line (find, create, rename, confirm) is at the foot of the
-  list, one line, in the list's own type. It never moves the rows.
-- Empty folder, unreadable folder, a workspace that is not there: each says
-  so in a row, in words.
+- Dot files are hidden until asked for, and quieter when shown. A link has
+  a small mark.
+- Empty folder, unreadable folder, a search with no match, a workspace that
+  is not there: each says so in words, in place.
+- Motion only where it tells something and never where it costs time: the
+  chevron's turn, a new row's arrival, the paste target's brief mark. A
+  folder's rows are there in the frame it opens (no height animation).
+  `prefers-reduced-motion` removes all of it.
 
 ### Icons
 
-yazi's own icons are Nerd Font glyphs, and the owner already has a Nerd
-Font (the editor's font, from `useGhostty()`: "FiraCode Nerd Font Mono").
-The tree uses the same glyphs and colours as yazi's preset theme (its
-`theme-dark.toml` and `theme-light.toml`, MIT, themselves from
-nvim-web-devicons, MIT; credit both in NOTICE), drawn as text in that font:
-no icon files, nothing to load, and it looks like the yazi the owner knows.
-
-When the font is not installed or lacks the glyphs (measure once, on a
-canvas, and remember), the tree falls back to its own three outlines:
-folder, open folder, file. It must never show empty boxes.
-
-The table is data, generated once from yazi's theme files into
-`app/files/icons.ts` (by exact name, then by extension; glyph, dark colour,
-light colour). Keep it under about 15 KB of source: the entries a Go, Bazel,
-TypeScript, Python, Rust, shell, config and docs repository meets, not all
-of yazi's. These identity colours are the one place hex literals are
-allowed (DESIGN.md "Colour" is about chrome; say so in DECISIONS).
+Its own, drawn for this tree (inline SVG, like `app/rail/glyphs.tsx`): no
+icon font, no table copied from yazi or from an editor's icon theme, and
+nothing to load. A folder closed and open, a file, and a mark of the kind
+of file that can be told apart at 16 px in a narrow rail: for example a
+small tile with one or two letters (`go`, `ts`, `py`, `md`, `{}`, `sh`)
+in a hue of its own, in DESIGN.md's categorical tints (kit `Tint` hues,
+light and dark). The kinds a Go, Bazel, TypeScript, Python, Rust, shell,
+config and docs repository meets; everything else is the plain file. The
+designer decides the exact system and shows it in the screenshots.
 
 ## Fast
 
@@ -120,8 +141,8 @@ This is the requirement the owner named first. What it means here:
   opens, after its own operations, and when the server says files changed
   (see below).
 - **Optimistic.** Create, rename, paste and trash show at once and are put
-  right by the listing that follows; a failure is said in the prompt line
-  and the row goes back.
+  right by the listing that follows; a failure is said in the strip at the
+  foot and the row goes back.
 
 Report measured numbers: `list` end to end for one folder of 200 entries
 and for 20 folders at once, key to frame at 5 000 rows, rail open to first
