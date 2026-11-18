@@ -11,6 +11,7 @@ import { hostContract, hostSignals } from "./shared/host-contract";
 import { readGhosttyConfig, resolveExecutable, resolveFaces, runDoctor } from "./host/doctor";
 import { prepareYazi, yaEmit } from "./host/yazi";
 import { recentCommits, revParse, subject } from "./host/git";
+import { applyOp, listDirs } from "./host/files";
 import { InstanceManager, defaultBridgeDir } from "./host/manager";
 
 type Context = ExperimentalHostRpcContext<typeof hostSignals>;
@@ -102,6 +103,8 @@ const entry = experimental_defineHostEntry({
         (error: unknown) => ({ ok: false, error: String(error) }),
       );
     },
+    filesList: ({ root, dirs }) => listDirs(root, dirs),
+    filesOp: ({ root, op }) => applyOp(root, op),
     ghosttyConfig: async ({ fontFamily, fontStyle }) => {
       const config = readGhosttyConfig();
       const effective = { ...config, ...(fontFamily ? { fontFamily } : {}), ...(fontStyle ? { fontStyle } : {}) };

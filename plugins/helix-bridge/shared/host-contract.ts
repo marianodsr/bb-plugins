@@ -108,6 +108,23 @@ export const ghosttyConfigSchema = z.object({
 });
 export type GhosttyConfig = z.infer<typeof ghosttyConfigSchema>;
 
+// The file tree (docs/HELIX_FILES.md), shaped like app/files/types.ts.
+const relativePathSchema = z.string().max(4096);
+export const fileEntrySchema = z.object({ name: z.string(), kind: z.enum(["file", "dir"]), link: z.boolean().optional() });
+export const dirListingSchema = z.object({ entries: z.array(fileEntrySchema), error: z.string().nullable(), truncated: z.boolean() });
+export const fileOpSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("create"), path: relativePathSchema.min(1) }).strict(),
+  z.object({ kind: z.literal("rename"), from: relativePathSchema.min(1), to: relativePathSchema.min(1) }).strict(),
+  z.object({ kind: z.literal("copy"), from: z.array(relativePathSchema.min(1)).min(1).max(5000), into: relativePathSchema }).strict(),
+  z.object({ kind: z.literal("move"), from: z.array(relativePathSchema.min(1)).min(1).max(5000), into: relativePathSchema }).strict(),
+  z.object({ kind: z.literal("trash"), paths: z.array(relativePathSchema.min(1)).min(1).max(5000) }).strict(),
+  z.object({ kind: z.literal("delete"), paths: z.array(relativePathSchema.min(1)).min(1).max(5000) }).strict(),
+]);
+export const fileOpResultSchema = z.object({ ok: z.boolean(), error: z.string().nullable(), paths: z.array(z.string()) });
+export const filesListInputSchema = z.array(relativePathSchema).min(1).max(64);
+/** The workspace the server names (the thread's own): every path is resolved against it. */
+const workspaceRootSchema = z.string().min(1).max(4096);
+
 export const hostContract = defineRpcContract({
   instances: {
     experimental_description: "Start watching the bridge directory if needed and list the Helix instances found there.",
@@ -185,6 +202,17 @@ export const hostContract = defineRpcContract({
     experimental_retryable: true,
     input: z.object({ fontFamily: z.string().max(200).optional(), fontStyle: z.string().max(64).optional() }).strict(),
     output: ghosttyConfigSchema,
+  },
+  filesList: {
+    experimental_description: "The file tree: read these folders of the workspace (no recursion), at most 5000 entries each.",
+    experimental_retryable: true,
+    input: z.object({ root: workspaceRootSchema, dirs: filesListInputSchema }).strict(),
+    output: z.record(z.string(), dirListingSchema),
+  },
+  filesOp: {
+    experimental_description: "The file tree: create, rename, copy, move, trash or delete inside the workspace, never replacing anything.",
+    input: z.object({ root: workspaceRootSchema, op: fileOpSchema }).strict(),
+    output: fileOpResultSchema.extend({ touched: z.array(z.string()) }),
   },
 
 });
