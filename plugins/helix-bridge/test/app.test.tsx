@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { describe, expect, it } from "vitest";
 import { isSubmitKey } from "../app/composer/ComposerParts";
-import { isTerminalReply } from "../app/surface/TreePane";
+import { cursorShownAfter, isTerminalReply } from "../app/surface/TreePane";
 
 const instance = {
   key: "host_t:42",
@@ -113,6 +113,16 @@ describe("the file tree's input", () => {
   it("drops terminal replies, never keys", () => {
     for (const reply of ["\x1b]11;rgb:1515/1515/1515\x1b\\", "\x1b[?62;22c", "\x1b[?2026;2$y", "\x1b[?997;1n", "\x1b[12;40R", "\x1b[4;900;1440t", "\x1bP>|ghostty\x1b\\"]) expect(isTerminalReply(reply)).toBe(true);
     for (const key of ["j", "\x1b", "\x1b[A", "\x1b[1;3A", "\x1bx", "\r", "\x1b[15~", "\x1bOP", "\x1b[Z"]) expect(isTerminalReply(key)).toBe(false);
+  });
+
+  it("knows yazi is taking text from its cursor, so 1, 2, 3 and Escape are typed there", () => {
+    const bytes = (text: string) => new TextEncoder().encode(text);
+    expect(cursorShownAfter(bytes("\x1b[?25l\x1b[2;1Hfiles"), true)).toBe(false);
+    expect(cursorShownAfter(bytes("\x1b[?25l\x1b[5;9HFind next:\x1b[?25h"), false)).toBe(true);
+    expect(cursorShownAfter(bytes("\x1b[?25h\x1b[?25l"), true)).toBe(false);
+    // Nothing about the cursor: as it was.
+    expect(cursorShownAfter(bytes("\x1b[?2026h\x1b[1;1Hlist\x1b[?2026l"), true)).toBe(true);
+    expect(cursorShownAfter(bytes("plain\x1b"), false)).toBe(false);
   });
 });
 

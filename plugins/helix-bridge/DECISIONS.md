@@ -534,4 +534,11 @@ conservatively. Newest last.
     own use of the key (it is ignored when bb prevented it or a menu or
     dialog is open). With `space u t` to get there, the chat needs no chord.
     In the rail, `C` sends the comments (the same letter as `space u C`).
-
+92. **`1`, `2`, `3` switch the rail's tabs from the file tree too.** The tree
+    is a terminal, so the rail's own keys never saw them there. The pane
+    takes them (and Escape) before yazi does, unless yazi is taking text: it
+    shows the terminal cursor (`CSI ? 25 h`) only then (checked on yazi
+    0.4.2: hidden while listing; shown for find, filter, rename and create),
+    and the pane follows that in yazi's output. Before this, Escape in a
+    yazi prompt closed the rail instead of the prompt. yazi's own tabs 1 to
+    3 are not reachable by those keys in the rail.

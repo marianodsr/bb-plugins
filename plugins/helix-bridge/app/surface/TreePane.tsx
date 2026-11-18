@@ -41,6 +41,21 @@ export interface TreeHandle {
   reveal(path: string): void;
 }
 
+/**
+ * Whether the terminal cursor is showing after this output (DECTCEM, `CSI ? 25 h`
+ * and `l`). yazi hides it while it lists files and shows it while it takes
+ * text (find, filter, rename, create), which is how the pane knows a key is
+ * typing and must reach yazi as it is.
+ */
+export function cursorShownAfter(bytes: Uint8Array, shown: boolean): boolean {
+  for (let i = bytes.indexOf(0x1b); i >= 0 && i + 5 < bytes.length; i = bytes.indexOf(0x1b, i + 1)) {
+    if (bytes[i + 1] !== 0x5b || bytes[i + 2] !== 0x3f || bytes[i + 3] !== 0x32 || bytes[i + 4] !== 0x35) continue;
+    if (bytes[i + 5] === 0x68) shown = true;
+    else if (bytes[i + 5] === 0x6c) shown = false;
+  }
+  return shown;
+}
+
 export function TreePane({
   threadId,
   width,
@@ -51,6 +66,7 @@ export function TreePane({
   onReady,
   fill,
   onEscape,
+  onRailKey,
 }: {
   threadId: string;
   width: number;
@@ -58,6 +74,8 @@ export function TreePane({
   fill?: boolean;
   /** Escape leaves the tree for the editor (the rail keeps yazi running). */
   onEscape?(): void;
+  /** `1`, `2`, `3` while yazi is not taking text: the rail's tabs (instead of yazi's own tabs). */
+  onRailKey?(key: "1" | "2" | "3"): void;
   config: { fontFamily: string | null; fontSize: number | null; fontStyle: string | null; faces?: SurfaceFont["faces"]; boldIsBright: boolean | null; optionAsAlt: OptionAsAlt; background: string | null; foreground: string | null };
   handle: { current: TreeHandle | null };
   /** yazi quit (or its session ended): hide the pane. */
@@ -83,6 +101,10 @@ export function TreePane({
   onReadyRef.current = onReady;
   const onEscapeRef = useRef(onEscape);
   onEscapeRef.current = onEscape;
+  const onRailKeyRef = useRef(onRailKey);
+  onRailKeyRef.current = onRailKey;
+  /** yazi is taking text (its cursor is showing): keys are typing. */
+  const typing = useRef(false);
   const lastKeyAt = useRef(0);
   const lastOpenAt = useRef(0);
   const ready = useRef(false);
@@ -158,7 +180,10 @@ export function TreePane({
     let disposed = false;
     let renderer: TerminalRenderer | null = null;
     const stream = new TerminalStream(terminalId, {
-      onChunk: (chunk) => renderer?.write(chunk.bytes),
+      onChunk: (chunk) => {
+        typing.current = cursorShownAfter(chunk.bytes, typing.current);
+        renderer?.write(chunk.bytes);
+      },
       onState: (next) => {
         if (next === "open")
           window.setTimeout(() => {
@@ -183,11 +208,21 @@ export function TreePane({
     };
     const onKey = (event: KeyboardEvent) => {
       lastKeyAt.current = Date.now();
-      if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && onEscapeRef.current) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        onEscapeRef.current();
-        return;
+      const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+      // While yazi takes text (a find, a rename) every key is its own, Escape included.
+      if (plain && !typing.current) {
+        if (event.key === "Escape" && onEscapeRef.current) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onEscapeRef.current();
+          return;
+        }
+        if ((event.key === "1" || event.key === "2" || event.key === "3") && onRailKeyRef.current) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onRailKeyRef.current(event.key);
+          return;
+        }
       }
       if (OPEN_KEYS.has(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) lastOpenAt.current = Date.now();
     };

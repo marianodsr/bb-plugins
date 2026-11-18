@@ -132,7 +132,7 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       <div className={cn("relative flex min-h-0 flex-1 flex-col", tab !== "files" && "pt-2")}>
         {filesShown ? (
           <div className={cn("flex min-h-0 flex-1", tab !== "files" && "hidden")}>
-            <FilesTab threadId={threadId} handle={treeHandle} onLeave={onLeave} />
+            <FilesTab threadId={threadId} handle={treeHandle} onLeave={onLeave} onTab={show} />
           </div>
         ) : null}
         {tab === "changes" ? <ChangesTab threadId={threadId} active root={root} onLeave={onLeave} /> : null}
@@ -225,7 +225,7 @@ function RailHeader({ threadId }: { threadId: string }) {
   );
 }
 
-function FilesTab({ threadId, handle, onLeave }: { threadId: string; handle: { current: TreeHandle | null }; onLeave?(): void }) {
+function FilesTab({ threadId, handle, onLeave, onTab }: { threadId: string; handle: { current: TreeHandle | null }; onLeave?(): void; onTab(tab: RailTab): void }) {
   const ghostty = useGhostty();
   const { values } = useSettings();
   const treeStaysOpen = values?.treeStaysOpen === true;
@@ -251,6 +251,7 @@ function FilesTab({ threadId, handle, onLeave }: { threadId: string; handle: { c
           onLeave?.();
           editorFocus.get(threadId)?.();
         }}
+        onRailKey={(key) => onTab(key === "1" ? "files" : key === "2" ? "changes" : "comments")}
         // A file chosen here: Helix takes the keyboard, unless the owner keeps the tree.
         onOpened={() => {
           if (treeStaysOpen) return;

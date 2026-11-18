@@ -108,7 +108,7 @@ whole set to copy; the hints in the plugin name these keys.
 | Outside Helix | Does |
 |---|---|
 | Escape, in the rail or the chat | Back to Helix (the rail closes) |
-| `1` / `2` / `3`, in the rail | Files, Changes, Comments |
+| `1` / `2` / `3`, in the rail | Files, Changes, Comments. In Files they take the place of yazi's own tab keys, except while yazi takes text (a find, a rename), when every key is typed there, Escape included |
 | `C`, in the rail | Send to thread |
 | `?`, in the rail | Every key of the tab, and the Helix keys above |
 
