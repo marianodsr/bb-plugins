@@ -72,8 +72,6 @@ export function queryText(kind: QueryKind, result: Record<string, unknown>, root
 }
 
 export interface CliHooks {
-  /** `tree-open` sent files to the Helix serving this thread. */
-  treeOpened?(threadId: string): void;
   /** Start or end a review; the status text. */
   review?(instance: BoundInstance, target: string): Promise<string>;
   /** Lines for bb hx doctor about this bb's own costs (a slow turn snapshot). */
@@ -113,23 +111,6 @@ export function registerCli(bb: BbPluginApi, service: HelixService, hooks: CliHo
             return guard(async () => {
               const instance = await target(options.instance, ctx.threadId);
               return { exitCode: 0, stdout: stateText(instance, await titleOf(instance), service.bridge.signalCounts.get(instance.hostId)) };
-            });
-          },
-        }),
-        "tree-open": cliCommand({
-          summary: "Open files chosen in the editor's file tree in the Helix serving this thread (the tree runs it)",
-          positionals: [{ name: "paths", description: "Files to open; the first is shown, the rest load in the background", required: true, variadic: true }],
-          options: { instance: instanceOption },
-          async run({ positionals, options }, ctx) {
-            return guard(async () => {
-              const instance = await target(options.instance, ctx.threadId);
-              const [first, ...rest] = positionals.paths;
-              if (!first) fail("no file to open", "invalid_params");
-              // The user chose it: open at once, even mid key sequence.
-              await service.show(instance, { path: first, interrupt: "always" });
-              for (const path of rest) await service.show(instance, { path, focus: false }).catch(() => null);
-              if (instance.threadId) hooks.treeOpened?.(instance.threadId);
-              return { exitCode: 0, stdout: "" };
             });
           },
         }),

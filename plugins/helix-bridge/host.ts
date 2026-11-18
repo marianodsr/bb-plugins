@@ -8,8 +8,7 @@
 // every 30 s, well inside the 5-minute idle window).
 import { experimental_defineHostEntry, type ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { hostContract, hostSignals } from "./shared/host-contract";
-import { readGhosttyConfig, resolveExecutable, resolveFaces, runDoctor } from "./host/doctor";
-import { prepareYazi, yaEmit } from "./host/yazi";
+import { readGhosttyConfig, resolveFaces, runDoctor } from "./host/doctor";
 import { recentCommits, revParse, subject } from "./host/git";
 import { applyOp, checkPaths, listDirs } from "./host/files";
 import { InstanceManager, defaultBridgeDir } from "./host/manager";
@@ -93,15 +92,6 @@ const entry = experimental_defineHostEntry({
       } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
       }
-    },
-    yaziPrepare: (_input, context) => prepareYazi(context.experimental_paths.dataDir),
-    yaziEmit: async ({ clientId, name, args }) => {
-      const ya = resolveExecutable("ya");
-      if (!ya) return { ok: false, error: "ya is not on PATH" };
-      return yaEmit(ya, clientId, name, args).then(
-        () => ({ ok: true, error: null }),
-        (error: unknown) => ({ ok: false, error: String(error) }),
-      );
     },
     filesList: ({ root, dirs }) => listDirs(root, dirs),
     filesOp: ({ root, op }) => applyOp(root, op),

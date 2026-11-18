@@ -138,17 +138,6 @@ export async function runDoctor(input: {
     checks.push({ id: tool, label: tool, ok: path !== null, level: path ? "ok" : "warn", detail: path ?? `not on PATH; Go files get no ${tool === "gopls" ? "language server" : "import fixing"}`, fix: path ? null : fix });
   }
 
-  // The file tree beside the editor (optional).
-  const yazi = resolveExecutable("yazi");
-  checks.push({
-    id: "yazi",
-    label: "File tree (yazi)",
-    ok: yazi !== null,
-    level: yazi ? "ok" : "warn",
-    detail: yazi ?? "not on PATH; the editor page has no file tree",
-    fix: yazi ? null : process.platform === "darwin" ? "brew install yazi" : "install yazi: https://yazi-rs.github.io/docs/installation",
-  });
-
   if (input.fontFamily) {
     const installed = await fontInstalled(input.fontFamily);
     checks.push({
