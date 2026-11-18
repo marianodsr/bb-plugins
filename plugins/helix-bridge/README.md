@@ -66,8 +66,9 @@ tabs:
   keys. bb's Git plugin lists at most 500 files; the list says when it is
   cut short.
 - **Comments**: every comment of the thread's review, grouped by file, with
-  the quoted lines, its state (not sent, sent, answered, resolved by the agent)
-  and the agent's replies. Enter shows the lines in Helix; `e` edits, `d d`
+  the quoted lines as highlighted code numbered as in the file, its state
+  (not sent, sent, answered, resolved by the agent) and severity as coloured
+  chips, and the agent's replies as Markdown. Enter shows the lines in Helix; `e` edits, `d d`
   drops, `r` replies, `a` acknowledges the agent's resolution, `o` reopens.
   The tab's count is what needs you (else what waits to be sent).
 

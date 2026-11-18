@@ -6,3 +6,11 @@ This plugin bundles and serves third-party software:
   Copyright Vercel, Inc., licensed under the Apache License, Version 2.0
   (assets/LICENSE-wterm). assets/ghostty-vt.wasm is the Ghostty VT core built
   by that project from Ghostty (https://github.com/ghostty-org/ghostty, MIT).
+
+- highlight.js 11 (https://github.com/highlightjs/highlight.js), Copyright
+  2006 Ivan Sagalaev and contributors, licensed under the BSD 3-Clause
+  License. It reads the code a comment quotes in the rail.
+
+- A few icon outlines in app/rail/glyphs.tsx are drawn after Lucide
+  (https://lucide.dev, ISC License, Copyright Lucide Contributors) and
+  Feather (https://feathericons.com, MIT License, Copyright Cole Bemis).

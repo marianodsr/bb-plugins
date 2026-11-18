@@ -555,4 +555,30 @@ conservatively. Newest last.
     The tab was already remembered (railStore), and yazi keeps its own
     place in its session, though the tree still moves to Helix's file when
     it opens.
+94. **The comment cards have colour, and the quote is code**
+    (`app/rail/CommentCard.tsx`). The owner asked for contrast, a clear
+    file, and the quoted lines highlighted with their line numbers.
+    - Each file's comments sit under a sticky bar with the file's name
+      first and its folder after.
+    - State is a tinted chip with its own icon and a stripe of the same
+      hue down the card (not sent amber, sent blue, answered violet,
+      resolved emerald, outdated and done grey); severity is a second chip.
+      DESIGN.md keeps hue for categories and state on host tokens: here the
+      owner asked for colour, and a comment's state is what the list is
+      scanned by.
+    - The quote is highlighted by highlight.js (25 grammars; Starlark reads
+      as Python) and painted from the host's code theme
+      (`experimental_useCodeTheme`, TextMate scopes), on the theme's own
+      background so its colours keep their contrast. Lines are numbered
+      from their place in the file; shared indentation is dropped; long
+      lines end in an ellipsis; past 8 lines the rest is counted. bb's own
+      `experimental_SourceCode` always numbers from 1 and its diff viewer
+      is one heavy element per comment, so neither fits a list.
+    - The comment and the replies are bb's `Markdown`, so inline code,
+      fences and quotes read as in the chat, sized for the rail.
+    - The icons are the plugin's own outlines (`glyphs.tsx`): the host's
+      set lacks most of the names and draws a fallback for them.
+    - `/plugins/helix-bridge/editor/~comments` shows the cards on made-up
+      comments with no Helix behind them, for `kit/scripts/shoot.mjs`
+      (checked in light and dark at the rail's width).
 
