@@ -1,6 +1,6 @@
 // The server end to end in-process: bb's fake plugin host, its host-RPC
 // driver wired to a real InstanceManager, and the mock bridge behind it.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,7 +20,7 @@ import { commentItems, type ReviewComment } from "../server/annotations";
 import { editedPaths, placesOf, revealOf } from "../server/watch";
 import { OPENER_SCRIPT, treeYaziToml } from "../host/yazi";
 import { revParse as gitRevParse, subject as gitSubject } from "../host/git";
-import { applyOp, listDirs } from "../host/files";
+import { applyOp, checkPaths, listDirs } from "../host/files";
 import type { FileOp } from "../app/files/types";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -49,6 +49,8 @@ let mock: Awaited<ReturnType<typeof startMockBridge>>;
 let manager: InstanceManager;
 let fake: ReturnType<typeof createFakePluginHost>;
 let sent: { threadId: string; text: string }[];
+/** Every threads.send in full (mode and mentions too). */
+let sentArgs: { threadId: string; mode?: string; input: { type: string; text: string; mentions?: unknown[] }[] }[];
 let reconcile: { controller: AbortController; done: Promise<void> };
 /** thr_files's workspace (env_files): a temporary folder the file tree may change. */
 let filesRoot: string;
@@ -86,6 +88,7 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
   filesRoot = realpathSync(mkdtempSync(join(tmpdir(), "hxs-files-")));
   mock = await startMockBridge({ dir, workspace, open: ["main.go"], pid: process.pid, env, ...(capabilities ? { capabilities } : {}) });
   sent = [];
+  sentArgs = [];
   fake = createFakePluginHost({
     pluginId: "helix-bridge",
     agentSkillIds: ["helix-bridge"],
@@ -102,6 +105,7 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
         list: async () => [makeThreadResponse({ id: "thr_env", environmentId: "env_test" })],
         send: async (args: { threadId: string; input: { text: string }[] }) => {
           sent.push({ threadId: args.threadId, text: args.input[0]!.text });
+          sentArgs.push(args as never);
           return {} as never;
         },
       },
@@ -131,6 +135,8 @@ async function setup(env: Record<string, string> = { BB_THREAD_ID: "thr_term" },
         }
         case "filesList":
           return listDirs(String(args.root), args.dirs as string[]);
+        case "filesCheck":
+          return checkPaths(String(args.root), args.paths as string[], args.intent as "read" | "write");
         case "filesOp":
           // The trash is the test's own folder.
           return applyOp(String(args.root), args.op as FileOp, { trashDir: join(filesRoot, "..") });
@@ -940,6 +946,123 @@ describe("the native file tree", () => {
     expect(filesSignals()).toEqual([{ threadId: "thr_files", dirs: null }]);
     await until(() => filesSignals().length === 2, 2500);
     expect(filesSignals()[1]).toEqual({ threadId: "thr_files", dirs: null });
+  });
+});
+
+describe("the file tree and the agent", () => {
+  const ask = (input: Record<string, unknown>) => fake.harness.behavior.callRpc("filesAsk", { threadId: "thr_files", ...input });
+
+  it("asks the thread about entries, as bb's own file mentions, queued behind a running turn", async () => {
+    mkdirSync(join(filesRoot, "services/auth"), { recursive: true });
+    writeFileSync(join(filesRoot, "services/auth/session.go"), "package auth");
+    expect(await ask({ kind: "ask", paths: ["services/auth/session.go", "services/auth"], text: "  How do these relate?  " })).toEqual({ ok: true, error: null });
+    expect(sentArgs).toHaveLength(1);
+    const [{ threadId, mode, input }] = sentArgs as [(typeof sentArgs)[number]];
+    expect({ threadId, mode }).toEqual({ threadId: "thr_files", mode: "queue-if-active" });
+    const text = "@services/auth/session.go @services/auth\n\nHow do these relate?";
+    expect(input).toEqual([
+      {
+        type: "text",
+        text,
+        mentions: [
+          { start: 0, end: 25, resource: { kind: "path", source: "workspace", path: "services/auth/session.go", label: "services/auth/session.go", entryKind: "file" } },
+          { start: 26, end: 40, resource: { kind: "path", source: "workspace", path: "services/auth", label: "services/auth", entryKind: "directory" } },
+        ],
+      },
+    ]);
+    expect(text.slice(0, 25)).toBe("@services/auth/session.go");
+    expect(text.slice(26, 40)).toBe("@services/auth");
+  });
+
+  it("asks the thread to write a file that is not there yet", async () => {
+    mkdirSync(join(filesRoot, "pkg"));
+    expect(await ask({ kind: "write", paths: ["pkg/new/token.go"], text: "A token type with an expiry." })).toEqual({ ok: true, error: null });
+    expect(sentArgs[0]?.input[0]).toEqual({
+      type: "text",
+      text: "Create @pkg/new/token.go.\n\nA token type with an expiry.",
+      mentions: [{ start: 7, end: 24, resource: { kind: "path", source: "workspace", path: "pkg/new/token.go", label: "pkg/new/token.go", entryKind: "file" } }],
+    });
+  });
+
+  it("refuses, and sends nothing, for paths the file methods refuse, a taken name, or no words", async () => {
+    writeFileSync(join(filesRoot, "main.go"), "");
+    symlinkSync(tmpdir(), join(filesRoot, "out"));
+    const refusals: [Record<string, unknown>, RegExp][] = [
+      [{ kind: "ask", paths: ["../etc/passwd"], text: "what?" }, /"\.\." part/u],
+      [{ kind: "ask", paths: ["/etc/passwd"], text: "what?" }, /Not a path in the workspace/u],
+      [{ kind: "ask", paths: ["gone.go"], text: "what?" }, /gone\.go is not there/u],
+      [{ kind: "ask", paths: ["main.go"], text: "   " }, /Write what to ask/u],
+      [{ kind: "write", paths: ["main.go"], text: "a main" }, /main\.go is taken/u],
+      [{ kind: "write", paths: ["a.go", "b.go"], text: "two" }, /One file at a time/u],
+      [{ kind: "write", paths: ["out/x.go"], text: "outside" }, /leads out of the workspace/u],
+      [{ kind: "write", paths: [".git/hooks/x"], text: "a hook" }, /\.git is not changed/u],
+    ];
+    for (const [input, why] of refusals) expect(await ask(input)).toEqual({ ok: false, error: expect.stringMatching(why) });
+    expect(sentArgs).toEqual([]);
+    await expect(ask({ kind: "ask", paths: Array.from({ length: 51 }, (_, i) => `f${i}`), text: "x" })).rejects.toThrow();
+    await expect(ask({ kind: "ask", paths: ["main.go"], text: "x".repeat(4001) })).rejects.toThrow();
+    await expect(ask({ kind: "ask", paths: [], text: "x" })).rejects.toThrow();
+    expect(await fake.harness.behavior.callRpc("filesAsk", { threadId: "thr_nobody", kind: "ask", paths: ["a.go"], text: "x" })).toMatchObject({ ok: false });
+  });
+
+  it("keeps the agent's trail: the running turn's files as they land, then the last turn's", async () => {
+    const thread = makeThreadResponse({ id: "thr_files", environmentId: "env_files" });
+    const agentFiles = () => fake.harness.behavior.callRpc("agentFiles", { threadId: "thr_files" }) as Promise<{ running: boolean; files: { path: string; change: string; turn: string }[] }>;
+    const signals = () => fake.harness.inspection.realtimeSignals.filter((s) => s.channel === "agent-files");
+    const queue: unknown[] = [];
+    let seq = 100;
+    fake.harness.sdk.stub("threads.events.list", async () => [{ seq: 100 }] as never);
+    fake.harness.sdk.stub("threads.events.wait", async () => {
+      const item = queue.shift();
+      if (!item) {
+        await wait(20);
+        return null as never;
+      }
+      seq += 1;
+      return { seq, createdAt: Date.now(), data: { item } } as never;
+    });
+    const change = (changes: Record<string, unknown>[]) => ({ type: "fileChange", status: "completed", changes });
+    // No Helix serves env_files: the tree having read it is what follows the turn.
+    expect(await agentFiles()).toEqual({ running: false, files: [] });
+    await fake.harness.behavior.callRpc("filesList", { threadId: "thr_files", dirs: [""] });
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    expect(await agentFiles()).toEqual({ running: true, files: [] });
+    queue.push(
+      change([{ path: join(filesRoot, "new.go"), kind: "add", diff: "+package main\n" }, { path: "main.go", kind: "update", diff: "-a\n+b\n" }]),
+      change([{ path: "old.go", kind: "delete" }, { path: "a.go", kind: "update", movePath: "b.go" }, { path: "/elsewhere/x.go", kind: "update" }]),
+      change([{ path: "made-and-gone.go", kind: "add" }]),
+      change([{ path: "made-and-gone.go", kind: "delete" }]),
+      { type: "fileChange", status: "failed", changes: [{ path: "failed.go", kind: "update" }] },
+    );
+    await until(async () => queue.length === 0 && (await agentFiles()).files.length === 5);
+    await wait(100);
+    const running = await agentFiles();
+    expect(running.running).toBe(true);
+    expect(running.files.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { path: "a.go", change: "deleted", turn: "running" },
+      { path: "b.go", change: "created", turn: "running" },
+      { path: "main.go", change: "edited", turn: "running" },
+      { path: "new.go", change: "created", turn: "running" },
+      { path: "old.go", change: "deleted", turn: "running" },
+    ]);
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    const last = await agentFiles();
+    expect(last.running).toBe(false);
+    expect(last.files.every((f) => f.turn === "last")).toBe(true);
+    expect(last.files).toHaveLength(5);
+    // The next turn starts empty and the last one stays until it ends.
+    await fake.harness.behavior.emitThreadEvent("thread.active", { thread });
+    queue.push(change([{ path: "main.go", kind: "update" }]));
+    await until(async () => (await agentFiles()).files.some((f) => f.turn === "running"));
+    const next = await agentFiles();
+    expect(next.files.find((f) => f.path === "main.go")).toEqual({ path: "main.go", change: "edited", turn: "running" });
+    expect(next.files.filter((f) => f.turn === "last").map((f) => f.path).sort()).toEqual(["a.go", "b.go", "new.go", "old.go"]);
+    await fake.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    expect((await agentFiles()).files).toEqual([{ path: "main.go", change: "edited", turn: "last" }]);
+    // Said over realtime (the four-a-second limit: test/files.test.ts).
+    await wait(300);
+    expect(signals().length).toBeGreaterThanOrEqual(2);
+    expect(signals().every((s) => JSON.stringify(s.payload) === JSON.stringify({ threadId: "thr_files" }))).toBe(true);
   });
 });
 

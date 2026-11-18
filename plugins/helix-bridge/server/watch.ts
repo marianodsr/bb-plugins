@@ -187,6 +187,10 @@ export interface WatchDeps {
   log(message: string): void;
   /** Every edit the agent made, for the turn's changes list (follow.ts). */
   edited?(edit: FileEdit): void;
+  /** Every completed item of a followed turn (the file tree's trail reads its file changes). */
+  completed?(threadId: string, item: unknown, root: string | null): void;
+  /** Follow this thread's turn even with no Helix serving it (its file tree shows the agent's trail). */
+  wanted?(threadId: string): boolean;
   /** For measurement: how long from bb recording an edit to Helix having it. */
   timing?(edit: FileEdit, ms: number, instance: BoundInstance): void;
 }
@@ -205,7 +209,7 @@ export class AgentWatcher {
   /** A turn started: follow its edits if a connected Helix serves its environment. */
   start(threadId: string, environmentId: string | null): void {
     if (!environmentId || this.loops.has(threadId)) return;
-    if (!this.serving(environmentId).some((i) => i.summary.capabilities.includes("reload") || i.summary.capabilities.includes("watch"))) return;
+    if (!this.serving(environmentId).some((i) => i.summary.capabilities.includes("reload") || i.summary.capabilities.includes("watch")) && !this.deps.wanted?.(threadId)) return;
     const controller = Object.assign(new AbortController(), { environmentId });
     this.loops.set(threadId, controller);
     void this.loop(threadId, environmentId, controller.signal).finally(() => {
@@ -251,6 +255,7 @@ export class AgentWatcher {
       }
       if (!row) continue;
       afterSeq = String(row.seq);
+      this.deps.completed?.(threadId, row.data?.item, root);
       const paths = editedPaths(row.data?.item, root);
       if (!paths) continue;
       await this.onEdit({ threadId, environmentId, paths, diffs: editedDiffs(row.data?.item, root), at: typeof row.createdAt === "number" ? row.createdAt : Date.now() });

@@ -16,6 +16,7 @@ import { Bridge, BridgeFailure, type BoundInstance } from "./server/bridge";
 import { registerCli } from "./server/cli";
 import { rpcContract, tags, type AppInstance, type Position, type RailComment } from "./server/contract";
 import { Annotator } from "./server/annotations";
+import { AGENT_FILES, AgentTrail, itemChanges } from "./server/agent-files";
 import { FILES_CHANGED, Files } from "./server/files";
 import { Follower } from "./server/follow";
 import { AgentWatcher } from "./server/watch";
@@ -105,7 +106,19 @@ export default async function plugin(bb: BbPluginApi) {
     service,
     hostCall: (method, input, hostId, timeoutMs) => hostCall(method, input, { hostId, timeoutMs }),
     publish: (payload) => bb.realtime.publish(FILES_CHANGED, payload),
+    // Queued behind a running turn, as Helix's own sends are.
+    send: async (threadId, message) => {
+      await bb.sdk.threads.send({ threadId, mode: "queue-if-active", input: [{ type: "text", text: message.text, mentions: message.mentions }] });
+    },
+    // A tree opened mid-turn: follow that turn for its trail from now on.
+    read: (threadId, environmentId) => {
+      if (activeByEnvironment.get(environmentId)?.has(threadId)) watcher.start(threadId, environmentId);
+    },
     log: (message) => bb.log.warn(message),
+  });
+  const trail = new AgentTrail({
+    root: async (threadId) => (await service.threadInfo(threadId)).path,
+    publish: (payload) => bb.realtime.publish(AGENT_FILES, payload),
   });
 
   const sends = new SendHandler({
@@ -123,7 +136,12 @@ export default async function plugin(bb: BbPluginApi) {
     reloaded: async (instance, event) => {
       bb.log.info(`Helix ${instance.key} reloaded ${String(event.path)} (${String(event.origin)}), ${Array.isArray(event.ranges) ? event.ranges.length : 0} range(s)`);
       if (instance.environmentId) reviews.noteChange(instance.environmentId);
-      if (event.origin === "watch" && typeof event.path === "string" && Array.isArray(event.ranges)) follower.noteReloaded(instance.threadId, event.path, event.ranges as never);
+      if (event.origin === "watch" && typeof event.path === "string" && Array.isArray(event.ranges)) {
+        follower.noteReloaded(instance.threadId, event.path, event.ranges as never);
+        // Changed on disk during a turn (a shell edit too): the trail's "edited".
+        const threads = instance.threadId ? [instance.threadId] : [...(instance.environmentId ? (activeByEnvironment.get(instance.environmentId) ?? []) : [])];
+        for (const threadId of threads) void trail.note(threadId, [{ path: event.path, change: "edited" }]);
+      }
       await watcher.onReloaded(instance, event).catch((error: unknown) => bb.log.warn(`following a reload on ${instance.key} failed: ${String(error)}`));
     },
     reviewRequested: (instance, target) => reviews.start(instance, target),
@@ -154,11 +172,15 @@ export default async function plugin(bb: BbPluginApi) {
     log: (message) => bb.log.warn(message),
     timing: (edit, ms, instance) => bb.log.info(`agent edit in ${edit.paths.length} file(s) reached ${instance.key} ${ms} ms after bb recorded it`),
     edited: (edit) => follower.noteEdit(edit),
+    completed: (threadId, item, root) => void trail.note(threadId, itemChanges(item, root)),
+    wanted: (threadId) => files.reads(threadId),
   });
 
   // Which environments have a turn running, so file changes there count as agent edits.
   const activeByEnvironment = new Map<string, Set<string>>();
   const setActive = (threadId: string, environmentId: string | null, active: boolean) => {
+    if (active) trail.turnStarted(threadId);
+    else trail.turnEnded(threadId);
     if (active) watcher.start(threadId, environmentId);
     else watcher.stop(threadId);
     if (!environmentId) return;
@@ -618,6 +640,8 @@ export default async function plugin(bb: BbPluginApi) {
     filesList: ({ threadId, dirs }) => files.list(threadId, dirs),
     filesOp: ({ threadId, op }) => files.op(threadId, op),
     filesOpen: ({ threadId, path }) => files.open(threadId, path),
+    filesAsk: ({ threadId, kind, paths, text }) => files.ask(threadId, kind, paths, text),
+    agentFiles: ({ threadId }) => trail.files(threadId),
     treeTerminal: ({ threadId }) => tree.terminal(threadId),
     treeReveal: async ({ threadId, path }) => ({ ok: await tree.reveal(threadId, path).catch(() => false) }),
     treeClose: async ({ threadId }) => ({ closed: await tree.close(threadId).catch(() => false) }),
@@ -784,6 +808,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(() => {
     if (positionTimer) clearTimeout(positionTimer);
     files.dispose();
+    trail.dispose();
     follower.dispose();
     annotator.dispose();
     watcher.dispose();

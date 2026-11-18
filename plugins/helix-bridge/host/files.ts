@@ -197,6 +197,20 @@ class Workspace {
     });
   }
 
+  /**
+   * A path a new entry may take: checked, free, and the nearest folder on
+   * its way that exists is a folder inside the workspace. Returns the top of
+   * what would be made: the entry, or the first missing folder on the way.
+   */
+  async newEntry(path: string): Promise<string> {
+    this.check(path);
+    let top = path;
+    while (parentOf(top) !== "" && !(await taken(this.abs(parentOf(top))))) top = parentOf(top);
+    await this.folder(parentOf(top));
+    if (await taken(this.abs(path))) throw new FilesError(`${path} is taken`);
+    return top;
+  }
+
   /** An existing folder to put entries into, inside the workspace. */
   async folder(path: string): Promise<void> {
     await this.inside(path);
@@ -277,13 +291,8 @@ export async function applyOp(root: string, op: FileOp, options: OpOptions = {})
         const folder = op.path.endsWith("/");
         const path = folder ? op.path.slice(0, -1) : op.path;
         current = path;
-        ws.check(path);
         const parent = parentOf(path);
-        // The top of what gets made: the entry, or the first folder on the way that is missing.
-        let top = path;
-        while (parentOf(top) !== "" && !(await taken(ws.abs(parentOf(top))))) top = parentOf(top);
-        await ws.folder(parentOf(top));
-        if (await taken(ws.abs(path))) throw new FilesError(`${path} is taken`);
+        const top = await ws.newEntry(path);
         await mkdir(ws.abs(parent), { recursive: true });
         if (folder) await mkdir(ws.abs(path));
         else await writeFile(ws.abs(path), "", { flag: "wx" });
@@ -378,4 +387,37 @@ async function trashMac(absolute: string, path: string, trashDir: string): Promi
   await rename(absolute, join(trashDir, name)).catch((error: NodeJS.ErrnoException) => {
     throw error.code === "EXDEV" ? onOtherDisk : error;
   });
+}
+
+/**
+ * Paths for a message to the thread's agent (the tree's Ask and Have it
+ * written): "read", each exists (a link followed for its kind, as a listing
+ * does) and is given with its kind; "write", one path a new file may take,
+ * by the rules of create. Nothing is changed.
+ */
+export async function checkPaths(root: string, paths: string[], intent: "read" | "write"): Promise<{ kinds: ("file" | "dir")[]; error: string | null }> {
+  let current = "";
+  try {
+    const ws = new Workspace(checkRoot(root));
+    const kinds: ("file" | "dir")[] = [];
+    for (const path of paths) {
+      current = path;
+      if (intent === "write") {
+        await ws.newEntry(path);
+        kinds.push("file");
+        continue;
+      }
+      const refused = pathError(path);
+      if (refused) throw new FilesError(refused);
+      const info = await stat(ws.abs(path)).catch(async (error: unknown) => {
+        // A broken link is a file, as the listing shows it.
+        if ((await lstat(ws.abs(path)).catch(() => null))?.isSymbolicLink()) return null;
+        throw error;
+      });
+      kinds.push(info?.isDirectory() ? "dir" : "file");
+    }
+    return { kinds, error: null };
+  } catch (error) {
+    return { kinds: [], error: words(error, current) };
+  }
 }
