@@ -668,8 +668,11 @@ conservatively. Newest last.
     the host, the doctor's check, `bb hx tree-open`, and the in-page tree in
     `EditorSurface` that nothing drew since 90; 92 (keys taken from yazi)
     no longer applies. Measured on the owner's machine through bb, from the
-    page: a listing takes 29 to 38 ms end to end (81 ms the first), of which
-    the host's own read is under 1 ms; the rest is bb's RPC path.
+    page: a listing takes 9 to 40 ms end to end (up to 80 ms the first of a
+    page), of which the host's own read is under 1 ms; the rest is bb's RPC
+    path. A file made with `a` and sent to the trash with `d` through this
+    route was really created in the workspace and really moved to
+    `~/.Trash`.
     `/plugins/helix-bridge/editor/~files/<threadId>` shows a real thread's
     tree with no Helix beside it and those times, for checks that must not
     attach to anyone's editor.

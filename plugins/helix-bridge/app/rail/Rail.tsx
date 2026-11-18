@@ -1,6 +1,6 @@
 // The editor page's rail: a sheet over the editor's left edge, there only
 // while it is used (EditorPage's RailSheet). At the top the thread and a way
-// to other threads' editors; then three tabs: Files (the yazi tree), Changes
+// to other threads' editors; then three tabs: Files (the workspace tree), Changes
 // (the review) and Comments. Choosing something, or Escape, closes it and
 // Helix has the keyboard again.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
