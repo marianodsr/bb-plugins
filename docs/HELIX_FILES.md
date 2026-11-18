@@ -119,6 +119,65 @@ light and dark). The kinds a Go, Bazel, TypeScript, Python, Rust, shell,
 config and docs repository meets; everything else is the plain file. The
 designer decides the exact system and shows it in the screenshots.
 
+## The tree and the agent
+
+The owner, later the same day: "take the chance to include things only bb
+has, and to interact with the LLM. For example sending files to the thread,
+but go beyond that and be creative."
+
+A file tree in an editor shows files. This one sits beside an agent that is
+reading and writing those files, so it can also be the place where you
+point the agent at things and where you see what it is doing. The rule
+that the editor is for the user holds: every item below happens because
+the user did it on a row. Nothing is added to the agent's context, and no
+tool is given to it.
+
+1. **Send to thread** (`s`, the row menu, or dragging rows onto the chat):
+   the selection, or the cursor's row, becomes references in the thread's
+   composer (bb's own file mentions, folders too), the chat gets the
+   keyboard, and you write the rest. This is the suite's handoff: the same
+   verb and the same flight to the composer as Send to thread everywhere
+   else (kit/handoff).
+2. **Ask** (`i`): a small box opens on the row, with the entries named, a
+   field ("Ask about session.go"), and a few ready questions as chips that
+   fit what is selected (a file: explain it, who uses it, write its tests,
+   review it; a folder: what is in here, how do its parts fit; several:
+   how do these relate). Enter sends the message to the thread now and
+   opens the chat on the answer; Escape drops it.
+3. **Have it written** (in the new-file field): Tab goes from the name to a
+   second field, "What should it contain?". With a description, Enter asks
+   the thread to write the file instead of making an empty one. The row
+   stays in place as "being written" until the file exists; then Helix
+   opens it, and the file watcher shows it arriving.
+4. **The agent's trail**: files the agent changed carry a mark, live while
+   its turn runs (the one moving thing in the tree) and steady for the turn
+   before. A closed folder carries the mark of what is inside it. `t`
+   narrows the tree to the agent's files and back; a chip in the bar says
+   how many there are. Enter on one opens it at its first change. The data
+   is what the plugin already keeps while it follows a turn: no reads of
+   the repository.
+5. **Review at a glance**: beside the status letter, a file of the active
+   review that is not viewed yet has a dot, and one with open comments has
+   their count; closed folders add up what they hold. All from the Changes
+   and Comments data already in memory.
+6. **New thread here** (a folder's row menu): bb's new-thread screen with
+   that folder referenced, for work that belongs to one service of the
+   monorepo. Only if bb's SDK lets a plugin open that screen with a draft;
+   otherwise it is left out and said so.
+
+The contract is `ThreadLink` in `app/files/types.ts`. On the server:
+`filesAsk { threadId, kind: "ask" | "write", paths, text }` sends the
+message (`sdk.threads.send`, queued if a turn is running) and gives
+`{ ok, error }`; `agentFiles { threadId }` gives `AgentFiles`; realtime
+`agent-files { threadId }` says they changed (a few times a second at
+most). `mention` and `newThread` need no server: they are bb's composer
+and navigation in the page.
+
+The messages are short and say only what the user asked, with the paths
+relative to the workspace. For a question: the paths, then the user's
+words. For a file to write: "Create `<path>`." and the description. No
+instructions about tools, no file contents.
+
 ## Fast
 
 This is the requirement the owner named first. What it means here:

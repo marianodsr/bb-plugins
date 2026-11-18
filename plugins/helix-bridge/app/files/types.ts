@@ -54,3 +54,44 @@ export interface FilesSource {
   /** Something outside the tree changed files (the agent, Helix, a shell): the given folders, or null for "anything". Returns the unsubscribe. */
   onChanged(listener: (dirs: string[] | null) => void): () => void;
 }
+
+// What only a tree inside bb can do: talk to the thread's agent about the
+// entries (docs/HELIX_FILES.md, "The tree and the agent"). Everything here
+// happens because the user asked for it on a row; nothing reaches the agent's
+// context otherwise.
+
+/** A file the agent changed, in the turn that is running or in the one before. */
+export interface AgentFile {
+  path: string;
+  change: "edited" | "created" | "deleted";
+  turn: "running" | "last";
+}
+
+export interface AgentFiles {
+  /** A turn is running in the thread now. */
+  running: boolean;
+  files: AgentFile[];
+}
+
+export interface Sent {
+  ok: boolean;
+  /** Why it could not be sent, in words for the user. */
+  error: string | null;
+}
+
+export interface ThreadLink {
+  /** The thread the tree belongs to, for "Sent to …". */
+  thread: { id: string; title: string | null };
+  /** Put references to these entries in the thread's composer and give it the keyboard; the user writes the rest. */
+  mention(paths: string[]): Promise<Sent>;
+  /** Send the thread a message about these entries now (RPC `filesAsk`, kind "ask"). */
+  ask(paths: string[], text: string): Promise<Sent>;
+  /** Ask the thread to write a file that does not exist yet (RPC `filesAsk`, kind "write"). */
+  write(path: string, description: string): Promise<Sent>;
+  /** The agent's files (RPC `agentFiles`). */
+  agentFiles(): Promise<AgentFiles>;
+  /** They changed (realtime `agent-files`). Returns the unsubscribe. */
+  onAgentFiles(listener: () => void): () => void;
+  /** Open bb's new-thread screen with these entries referenced. Absent when bb offers no way. */
+  newThread?(paths: string[]): void;
+}
