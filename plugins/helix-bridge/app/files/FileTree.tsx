@@ -87,6 +87,8 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
   const [cursorPath, setCursorPath] = useState<string | null>(memory.cursor);
   const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY);
   const anchor = useRef<{ path: string; base: ReadonlySet<string> } | null>(null);
+  /** Selecting a range (`v`): every move of the cursor takes the rows from where it started. */
+  const [visual, setVisual] = useState(false);
   const [clip, setClipState] = useState(memory.clip);
   const setClip = (next: typeof clip) => {
     memory.clip = next;
@@ -658,9 +660,28 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
     if (extend && current) {
       anchor.current ??= { path: current.path, base: selected };
       selectRange(anchor.current.path, row.path, anchor.current.base);
-    } else anchor.current = null;
+    } else if (!visual) anchor.current = null;
     setCursor(row.path);
   };
+  /** `v`: start selecting from the cursor's row; again (or Escape) to stop, with the selection kept for the next key. */
+  const toggleVisual = () => {
+    if (visual) return setVisual(false);
+    if (!current) return;
+    anchor.current = { path: current.path, base: selected };
+    selectRange(current.path, current.path, selected);
+    setVisual(true);
+  };
+  // While selecting, the range follows the cursor however it moved (keys, a page, a click).
+  const currentPath = current?.path ?? null;
+  useEffect(() => {
+    if (!visual || currentPath === null || !anchor.current) return;
+    selectRange(anchor.current.path, currentPath, anchor.current.base);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visual, currentPath]);
+  // An action took the selection (copy, trash, send): selecting is over.
+  useEffect(() => {
+    if (visual && selected.size === 0) setVisual(false);
+  }, [visual, selected]);
   const selectRange = (from: string, to: string, base: ReadonlySet<string>) => {
     const a = indexOf.get(from) ?? at;
     const b = indexOf.get(to) ?? at;
@@ -743,6 +764,7 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
     if (menu) return setMenu(null), true;
     if (confirm) return setConfirm(null), true;
     if (ask) return setAsk(null), true;
+    if (visual) return setVisual(false), true;
     if (searching) return endSearch(true), true;
     if (agentView) return endAgentView(), true;
     if (clip) return setClip(null), true;
@@ -827,6 +849,8 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
         return handled(), void paste();
       case " ":
         return handled(), toggleSelect();
+      case "v":
+        return handled(), toggleVisual();
       case "d":
       case "Backspace":
       case "Delete":
@@ -873,6 +897,7 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
       described(["x", "mod+x"], "Cut"),
       described(["p", "mod+v"], "Paste into the cursor's folder"),
       described(["Space"], "Select and go down"),
+      described(["v"], "Select a range: move to take rows, then act on them all; v or Escape stops"),
       described(["d", "Backspace"], "Move to the trash"),
       described(["shift+d"], "Delete for good"),
       described(["."], "Show or hide dot files"),
@@ -1156,6 +1181,7 @@ export function FileTree({ source, threadId, onLeave, link = null, changes, comm
         confirm={confirm}
         clip={clip}
         selected={selected.size}
+        selecting={visual}
         into={into}
         onConfirm={() => confirm && void remove(confirm)}
         onCancel={() => {
@@ -1196,6 +1222,7 @@ function Foot({
   confirm,
   clip,
   selected,
+  selecting,
   into,
   onConfirm,
   onCancel,
@@ -1206,6 +1233,8 @@ function Foot({
   confirm: Confirm | null;
   clip: { mode: "copy" | "move"; paths: string[] } | null;
   selected: number;
+  /** A range is being selected (`v`). */
+  selecting: boolean;
   into: string;
   onConfirm(): void;
   onCancel(): void;
@@ -1241,6 +1270,12 @@ function Foot({
       {selected > 0 ? (
         <div className="flex h-8 items-center gap-1.5 px-3 text-muted-foreground" data-files-selection>
           <span className="tabular-nums text-foreground">{selected} selected</span>
+          {selecting ? (
+            <span className="flex min-w-0 items-center gap-1 truncate" data-files-selecting>
+              <Kbd>J</Kbd>
+              <Kbd>K</Kbd> take more, <Kbd>V</Kbd> stops
+            </span>
+          ) : null}
           <span className="flex-1" />
           <button type="button" onClick={onClearSelection} className="h-6 rounded-md px-1.5 hover:bg-state-hover hover:text-foreground">
             Clear

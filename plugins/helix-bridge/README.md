@@ -207,7 +207,8 @@ in this repository is its design.
 | `a`, `A` | New file, new folder, typed in place; `a/b/c.go` makes the folders on the way |
 | `r`, F2 | Rename in place |
 | `y` `x` `p` (Cmd+C, Cmd+X, Cmd+V) | Copy, mark to move, paste into the cursor's folder; a taken name gets `_1` |
-| Space; Shift with `j` `k` | Select several |
+| `v` | Select a range: from then on every move takes the rows it passes; the next key (`y`, `x`, `d`, `s`, `i`) acts on them all. `v` or Escape stops and keeps them |
+| Space; Shift with `j` `k` | Select one by one, or extend |
 | `d`, Backspace; `D` | To the trash, after a confirmation; delete for good |
 | `.` | Show or hide dot files |
 | `c` | Copy the path |

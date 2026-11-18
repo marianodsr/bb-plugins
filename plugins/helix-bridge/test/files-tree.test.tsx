@@ -387,6 +387,41 @@ describe("the file tree", () => {
     expect(tree.onLeave).not.toHaveBeenCalled();
   });
 
+  it("selects a range with v: the cursor takes rows as it moves, and the next key acts on them all", async () => {
+    const tree = await mount();
+    const count = () => tree.list().querySelectorAll("[data-selected]").length;
+    const selecting = () => document.querySelector("[data-files-selecting]") !== null;
+    // From README.md upwards; coming back down gives rows back.
+    await keys(tree, "G", "v");
+    expect(count()).toBe(1);
+    expect(selecting()).toBe(true);
+    await keys(tree, "k", "k");
+    expect(count()).toBe(3);
+    await keys(tree, "j");
+    expect(count()).toBe(2);
+    // Copy takes both and selecting is over.
+    await keys(tree, "y");
+    expect(document.querySelector("[data-files-clip=copy]")?.textContent).toContain("2 items to copy");
+    expect(count()).toBe(0);
+    expect(selecting()).toBe(false);
+    await tree.press("Escape");
+    // Any move extends it, not only j and k: to the top takes every row on the way.
+    await keys(tree, "v", "g", "g");
+    expect(count()).toBe(tree.paths().length - 1);
+    // Escape stops selecting and keeps what was taken; once more drops it; the rail stays.
+    await tree.press("Escape");
+    expect(selecting()).toBe(false);
+    expect(count()).toBe(tree.paths().length - 1);
+    await tree.press("Escape");
+    expect(count()).toBe(0);
+    expect(tree.onLeave).not.toHaveBeenCalled();
+    // v again stops too, and the trash then asks about all of them.
+    await keys(tree, "G", "v", "k", "v");
+    expect(selecting()).toBe(false);
+    await keys(tree, "j", "d");
+    expect(document.querySelector("[role=alertdialog]")?.textContent).toContain("Move 2 items to the trash?");
+  });
+
   it("cuts and pastes, dims what is cut, and refuses a folder into itself", async () => {
     const tree = await mount();
     await keys(tree, "G", "x");

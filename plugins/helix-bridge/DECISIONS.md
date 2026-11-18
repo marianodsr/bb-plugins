@@ -676,4 +676,11 @@ conservatively. Newest last.
     `/plugins/helix-bridge/editor/~files/<threadId>` shows a real thread's
     tree with no Helix beside it and those times, for checks that must not
     attach to anyone's editor.
+103. **`v` selects a range** (the owner: "a selection mode where I press v
+    and go down with j or up with k taking the selection, then the other
+    keys act in bulk"). From `v`, the selection is every row between where
+    it was pressed and the cursor, however the cursor moves (keys, a page,
+    `g g`, a click), on top of what was already selected. `v` again or
+    Escape stops and keeps the rows; an action that takes the selection
+    (copy, cut, trash, send, ask) ends it. The foot says it while it lasts.
 
