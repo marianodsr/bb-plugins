@@ -1,6 +1,6 @@
 // The file tree's host half (host/files.ts) and the server's change signal
 // (server/files.ts), against temporary folders only.
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
@@ -163,6 +163,13 @@ describe("rename", () => {
     expect(result.ok).toBe(true);
     expect(readdirSync(root)).toEqual(["README.md"]);
     if (!caseless) expect(has("readme.md")).toBe(false);
+  });
+
+  it("does not take another hard link of the same file for a change of case", async () => {
+    file("a.go", "a");
+    linkSync(join(root, "a.go"), join(root, "b.go"));
+    expect(await op({ kind: "rename", from: "a.go", to: "b.go" })).toMatchObject({ ok: false, error: "b.go is taken" });
+    expect(readdirSync(root).sort()).toEqual(["a.go", "b.go"]);
   });
 });
 
@@ -369,6 +376,12 @@ describe("the server's change signal", () => {
     const { files: f } = files({ environmentId: null, hostId: null, path: null });
     expect(await f.list("thr_1", ["", "a"])).toEqual({ root: "", dirs: { "": { entries: [], error: "This thread has no workspace", truncated: false }, a: { entries: [], error: "This thread has no workspace", truncated: false } } });
     expect(await f.op("thr_1", { kind: "create", path: "a" })).toEqual({ ok: false, error: "This thread has no workspace", paths: [] });
+  });
+
+  it("says in every folder when the workspace's machine cannot be reached", async () => {
+    const f = new Files({ service: { threadInfo: async () => ({ environmentId: "env_1", hostId: "host_1", path: root, title: null }) } as never, hostCall: async () => Promise.reject(new Error("host is offline")), publish: () => {}, log: () => {} });
+    expect((await f.list("thr_1", ["a"])).dirs.a?.error).toBe("Could not read the workspace's machine: host is offline");
+    expect(await f.op("thr_1", { kind: "create", path: "a" })).toEqual({ ok: false, error: "host is offline", paths: [] });
   });
 
   it("tells the trees reading an environment that it changed, at most once a second per thread", async () => {

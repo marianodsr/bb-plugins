@@ -15,12 +15,24 @@ import { resolveExecutable } from "./doctor";
 /** The most entries one folder's listing returns. */
 export const LIST_LIMIT = 5000;
 
-const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+/** A name's place in natural order with case ignored: lower case, runs of digits padded to compare as numbers. */
+function sortKey(name: string): string {
+  return name.toLowerCase().replace(/\d+/gu, (run) => run.padStart(32, "0"));
+}
 
-/** Folders first, then files; each in natural order with case ignored (exact order breaks ties). */
-export function compareEntries(a: FileEntry, b: FileEntry): number {
-  if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-  return collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+/**
+ * Folders first, then files; each in natural order (`a2` before `a10`) with
+ * case ignored, the exact name breaking ties. One key per entry, compared as
+ * plain strings: a collator per comparison costs most of a 5 000-entry list.
+ */
+export function sortEntries(entries: FileEntry[]): FileEntry[] {
+  const keyed = entries.map((entry) => ({ entry, key: sortKey(entry.name) }));
+  keyed.sort((a, b) => {
+    if (a.entry.kind !== b.entry.kind) return a.entry.kind === "dir" ? -1 : 1;
+    if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+    return a.entry.name < b.entry.name ? -1 : a.entry.name > b.entry.name ? 1 : 0;
+  });
+  return keyed.map((k) => k.entry);
 }
 
 /** A refusal or failure, in words for the user. */
@@ -95,14 +107,14 @@ async function listOne(root: string, path: string): Promise<DirListing> {
   } catch (error) {
     return { entries: [], error: listingError(error, path), truncated: false };
   }
-  const entries = await Promise.all(
-    dirents.map(async (d): Promise<FileEntry> => {
-      if (!d.isSymbolicLink()) return { name: d.name, kind: d.isDirectory() ? "dir" : "file" };
-      const target = await stat(join(dirPath, d.name)).catch(() => null);
-      return { name: d.name, kind: target?.isDirectory() ? "dir" : "file", link: true };
-    }),
-  );
-  return { entries: entries.sort(compareEntries), error: null, truncated };
+  const entries: FileEntry[] = [];
+  const links: Promise<FileEntry>[] = [];
+  for (const d of dirents) {
+    if (!d.isSymbolicLink()) entries.push({ name: d.name, kind: d.isDirectory() ? "dir" : "file" });
+    else links.push(stat(join(dirPath, d.name)).then((target) => ({ name: d.name, kind: target.isDirectory() ? "dir" : "file", link: true }), () => ({ name: d.name, kind: "file", link: true })));
+  }
+  if (links.length > 0) entries.push(...(await Promise.all(links)));
+  return { entries: sortEntries(entries), error: null, truncated };
 }
 
 /** Several folders in one call; every asked folder is a key of the answer. */
@@ -294,7 +306,8 @@ export async function applyOp(root: string, op: FileOp, options: OpOptions = {})
         if (source.isDirectory() && (op.to === op.from || op.to.startsWith(`${op.from}/`))) throw new FilesError(`${op.from} cannot go into itself`);
         const existing = await lstat(ws.abs(op.to)).catch(() => null);
         // The same entry under another case (a case-insensitive disk) is not taken.
-        if (existing && !(existing.ino === source.ino && existing.dev === source.dev)) throw new FilesError(`${op.to} is taken`);
+        const caseOnly = existing !== null && existing.ino === source.ino && existing.dev === source.dev && op.to.toLowerCase() === op.from.toLowerCase();
+        if (existing && !caseOnly) throw new FilesError(`${op.to} is taken`);
         await rename(ws.abs(op.from), ws.abs(op.to));
         touched.add(parentOf(op.from)).add(parentOf(op.to));
         paths.push(op.to);

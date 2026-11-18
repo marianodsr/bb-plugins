@@ -36,8 +36,13 @@ export class Files {
       set.add(threadId);
       this.readers.set(info.environmentId, set);
     }
-    const listed = (await this.deps.hostCall("filesList", { root: info.path, dirs }, info.hostId, 15_000)) as Record<string, DirListing>;
-    return { root: info.path, dirs: listed };
+    try {
+      const listed = (await this.deps.hostCall("filesList", { root: info.path, dirs }, info.hostId, 15_000)) as Record<string, DirListing>;
+      return { root: info.path, dirs: listed };
+    } catch (error) {
+      const why = `Could not read the workspace's machine: ${error instanceof Error ? error.message : String(error)}`;
+      return { root: info.path, dirs: Object.fromEntries(dirs.map((d) => [d, { entries: [], error: why, truncated: false }])) };
+    }
   }
 
   async op(threadId: string, op: FileOp): Promise<FileOpResult> {
