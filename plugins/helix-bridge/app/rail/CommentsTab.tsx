@@ -10,6 +10,7 @@ import { EmptyState, ShortcutHint, SkeletonRows, useHotkeys } from "../../kit";
 import { useHelixRpc } from "../data";
 import { SendToThread } from "../review/SendToThread";
 import { hideOptimistic, refetchComments, useComments } from "./commentsStore";
+import { railMemory, useKeyedCursor } from "./railMemory";
 import { editorFocus } from "./railStore";
 
 const STATE: Record<RailComment["state"], { label: string; className: string }> = {
@@ -31,8 +32,14 @@ function lines(c: RailComment): string {
 export function CommentsTab({ threadId, onLeave }: { threadId: string; onLeave?(): void }) {
   const rpc = useHelixRpc();
   const { data, error } = useComments(threadId);
-  const [showDone, setShowDone] = useState(false);
-  const [cursor, setCursor] = useState(0);
+  // Where this was when the rail closed: the same comment, the same filter.
+  const memory = railMemory(threadId).comments;
+  const [showDone, setShowDoneState] = useState(memory.showDone);
+  const setShowDone = (update: (shown: boolean) => boolean) =>
+    setShowDoneState((shown) => {
+      memory.showDone = update(shown);
+      return memory.showDone;
+    });
   const [editing, setEditing] = useState<{ id: string; mode: "edit" | "reply" } | null>(null);
   const [confirmDrop, setConfirmDrop] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -43,7 +50,7 @@ export function CommentsTab({ threadId, onLeave }: { threadId: string; onLeave?(
     return all.sort((a, b) => a.path.localeCompare(b.path) || ORDER[a.state] - ORDER[b.state] || a.startLine - b.startLine);
   }, [data, showDone]);
   const done = (data?.comments ?? []).filter((c) => c.state === "done").length;
-  const at = Math.min(cursor, Math.max(0, visible.length - 1));
+  const { at, setAt: setCursor } = useKeyedCursor(visible, (c) => c.id, memory.row, (id) => (memory.row = id));
   const current = visible[at] ?? null;
 
   const act = (comment: RailComment, action: "edit" | "delete" | "reply" | "reopen" | "resolve" | "acknowledge", body?: string) => {
@@ -59,14 +66,16 @@ export function CommentsTab({ threadId, onLeave }: { threadId: string; onLeave?(
   };
   const jump = (c: RailComment) => {
     void rpc.call("openChange", { threadId, path: c.path, line: c.startLine }).catch(() => {});
+    // The rail comes back on this comment.
+    memory.row = c.id;
     onLeave?.();
     editorFocus.get(threadId)?.();
   };
 
   useHotkeys(
     [
-      { key: ["j", "ArrowDown"], handler: () => setCursor((c) => Math.min(visible.length - 1, c + 1)), description: "Next comment", group: "Comments" },
-      { key: ["k", "ArrowUp"], handler: () => setCursor((c) => Math.max(0, c - 1)), description: "Previous comment", group: "Comments" },
+      { key: ["j", "ArrowDown"], handler: () => setCursor(Math.min(visible.length - 1, at + 1)), description: "Next comment", group: "Comments" },
+      { key: ["k", "ArrowUp"], handler: () => setCursor(Math.max(0, at - 1)), description: "Previous comment", group: "Comments" },
       { key: "Enter", handler: () => current && jump(current), description: "Show its lines in Helix", group: "Comments" },
       { key: "e", handler: () => current && (current.state === "unsent" || current.state === "sent") && setEditing({ id: current.id, mode: "edit" }), description: "Edit", group: "Comments" },
       { key: "r", handler: () => current && !current.local && setEditing({ id: current.id, mode: "reply" }), description: "Reply", group: "Comments" },

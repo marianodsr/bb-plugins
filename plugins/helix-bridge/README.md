@@ -45,7 +45,10 @@ covers them).
 Helix fills the page, and bb's sidebar stays bb's. The rail is a sheet over
 the editor's left edge that is there only while you use it: a key in Helix
 opens it with the keyboard, and choosing a file, a change or a comment (or
-Escape, or a click outside) closes it and puts you back in Helix. It has the
+Escape, or a click outside) closes it and puts you back in Helix. It
+remembers where it was, per thread: opened again it is on the same tab, on
+the same file or comment, with the same filter and folders, and the
+keyboard is there. It has the
 thread (and the other threads that have an editor) at the top, then three
 tabs:
 

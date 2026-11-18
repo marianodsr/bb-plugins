@@ -542,3 +542,17 @@ conservatively. Newest last.
     and the pane follows that in yazi's output. Before this, Escape in a
     yazi prompt closed the rail instead of the prompt. yazi's own tabs 1 to
     3 are not reachable by those keys in the rail.
+93. **The rail remembers where it was** (`app/rail/railMemory.ts`): per
+    thread, the row under the cursor in Changes and in Comments, the
+    unviewed filter, the folders opened or closed, and whether done
+    comments show. The rail unmounts when it closes (90), so the memory is
+    a module map, which also survives leaving the page; it does not survive
+    a reload of the window. The cursor is kept by what the row is (a file's
+    path, a comment's id), not by its index, so it is on the same row after
+    the list changed while the rail was closed (the agent answered, a file
+    was viewed); a row that is gone leaves the cursor at the same place in
+    the list. Opening the rail puts the keyboard on that list, as before.
+    The tab was already remembered (railStore), and yazi keeps its own
+    place in its session, though the tree still moves to Helix's file when
+    it opens.
+

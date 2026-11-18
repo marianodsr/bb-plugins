@@ -12,6 +12,7 @@ import { EmptyState, ProgressLine, Segmented, ShortcutHint, SkeletonRows, useHot
 import { useHelixRpc } from "../data";
 import { setViewedOptimistic, useChanges, type ChangesData } from "./changesStore";
 import { DiffFlyout } from "./DiffFlyout";
+import { railMemory, useKeyedCursor } from "./railMemory";
 import { editorFocus } from "./railStore";
 
 type Scope = "uncommitted" | "branch" | "pr" | "commit";
@@ -150,11 +151,24 @@ function ScopeBar({ threadId, data, pending, onPick }: { threadId: string; data:
   );
 }
 
+/** What a row is, whatever its place in the list. */
+const rowKey = (row: Row) => (row.kind === "dir" ? `d:${row.dir}` : `f:${row.file.path}`);
+
 function FileList({ threadId, review, root, onLeave }: { threadId: string; review: NonNullable<ChangesData["review"]>; root: React.RefObject<HTMLDivElement | null>; onLeave?(): void }) {
   const rpc = useHelixRpc();
-  const [unviewedOnly, setUnviewedOnly] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string> | null>(null);
-  const [cursor, setCursor] = useState(0);
+  // Where this was when the rail closed: the same row, filter and open folders.
+  const memory = railMemory(threadId).changes;
+  const [unviewedOnly, setUnviewedOnlyState] = useState(memory.unviewedOnly);
+  const setUnviewedOnly = (update: (only: boolean) => boolean) =>
+    setUnviewedOnlyState((only) => {
+      memory.unviewedOnly = update(only);
+      return memory.unviewedOnly;
+    });
+  const [collapsed, setCollapsedState] = useState<Set<string> | null>(memory.collapsed);
+  const setCollapsed = (next: Set<string>) => {
+    memory.collapsed = next;
+    setCollapsedState(next);
+  };
   const [listFocused, setListFocused] = useState(false);
   const [flashing, setFlashing] = useState<ReadonlySet<string>>(new Set());
   const list = useRef<HTMLDivElement>(null);
@@ -201,7 +215,7 @@ function FileList({ threadId, review, root, onLeave }: { threadId: string; revie
     return out;
   }, [groups, collapsedSet]);
 
-  const at = Math.min(cursor, Math.max(0, rows.length - 1));
+  const { at, setAt: setCursor } = useKeyedCursor(rows, rowKey, memory.row, (key) => (memory.row = key));
   const current = rows[at] ?? null;
   const currentFile = current?.kind === "file" ? current.file : null;
 
@@ -214,13 +228,12 @@ function FileList({ threadId, review, root, onLeave }: { threadId: string; revie
   };
   // j and k stop on files (and on folders that are closed, whose files are hidden).
   const stop = (row: Row | undefined) => Boolean(row && (row.kind === "file" || row.collapsed));
-  const move = (delta: number) =>
-    setCursor((c) => {
-      let i = Math.min(c, rows.length - 1);
-      do i += delta;
-      while (i >= 0 && i < rows.length && !stop(rows[i]));
-      return i >= 0 && i < rows.length ? i : Math.min(c, rows.length - 1);
-    });
+  const move = (delta: number) => {
+    let i = at;
+    do i += delta;
+    while (i >= 0 && i < rows.length && !stop(rows[i]));
+    if (i >= 0 && i < rows.length) setCursor(i);
+  };
   // The cursor starts on the first file, not on a folder.
   useEffect(() => {
     if (current && !stop(current)) {
@@ -233,6 +246,8 @@ function FileList({ threadId, review, root, onLeave }: { threadId: string; revie
     // A deleted file has nothing on disk to open: its old text is the flyout's diff.
     if (file.status === "deleted") return;
     void rpc.call("openChange", { threadId, path: file.path }).catch(() => {});
+    // The rail comes back on this file.
+    memory.row = `f:${file.path}`;
     setListFocused(false);
     onLeave?.();
     editorFocus.get(threadId)?.();
