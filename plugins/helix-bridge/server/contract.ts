@@ -4,7 +4,7 @@
 // (`position`), never through a bb write.
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { ghosttyConfigSchema } from "../shared/host-contract";
+import { dirListingSchema, fileOpResultSchema, fileOpSchema, filesListInputSchema, ghosttyConfigSchema } from "../shared/host-contract";
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u);
 const instanceKey = z.string().regex(/^[A-Za-z0-9_-]{1,64}:[A-Za-z0-9_-]{1,64}$/u);
@@ -273,6 +273,21 @@ export const rpcContract = defineRpcContract({
     experimental_description: "Close the thread's tree (the editor closed).",
     input: z.object({ threadId: id }).strict(),
     output: z.object({ closed: z.boolean() }),
+  },
+  filesList: {
+    experimental_description: "The file tree: these folders of the thread's workspace (\"\" is the workspace), read in one call, with the workspace's absolute path.",
+    input: z.object({ threadId: id, dirs: filesListInputSchema }).strict(),
+    output: z.object({ root: z.string(), dirs: z.record(z.string(), dirListingSchema) }),
+  },
+  filesOp: {
+    experimental_description: "The file tree: create, rename, copy, move, trash or delete in the thread's workspace. Never replaces; errors come back as values.",
+    input: z.object({ threadId: id, op: fileOpSchema }).strict(),
+    output: fileOpResultSchema,
+  },
+  filesOpen: {
+    experimental_description: "The file tree: open a file of the workspace in the thread's Helix, at once.",
+    input: z.object({ threadId: id, path: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
   },
   editorTerminal: {
     experimental_description: "The thread's Helix terminal session, started if needed.",

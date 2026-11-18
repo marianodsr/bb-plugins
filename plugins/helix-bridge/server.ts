@@ -16,6 +16,7 @@ import { Bridge, BridgeFailure, type BoundInstance } from "./server/bridge";
 import { registerCli } from "./server/cli";
 import { rpcContract, tags, type AppInstance, type Position, type RailComment } from "./server/contract";
 import { Annotator } from "./server/annotations";
+import { FILES_CHANGED, Files } from "./server/files";
 import { Follower } from "./server/follow";
 import { AgentWatcher } from "./server/watch";
 import { displayPath, lastLine, rootsOf } from "./server/format";
@@ -98,6 +99,13 @@ export default async function plugin(bb: BbPluginApi) {
     service,
     hostCall: (method, input, hostId) => hostCall(method, input as Record<string, unknown>, { hostId, timeoutMs: 15_000 }),
     bridgeDir: async () => (await settings.get()).bridgeDir,
+  });
+
+  const files = new Files({
+    service,
+    hostCall: (method, input, hostId, timeoutMs) => hostCall(method, input, { hostId, timeoutMs }),
+    publish: (payload) => bb.realtime.publish(FILES_CHANGED, payload),
+    log: (message) => bb.log.warn(message),
   });
 
   const sends = new SendHandler({
@@ -607,6 +615,9 @@ export default async function plugin(bb: BbPluginApi) {
       commentsTouched(null);
       return { accepted: true };
     },
+    filesList: ({ threadId, dirs }) => files.list(threadId, dirs),
+    filesOp: ({ threadId, op }) => files.op(threadId, op),
+    filesOpen: ({ threadId, path }) => files.open(threadId, path),
     treeTerminal: ({ threadId }) => tree.terminal(threadId),
     treeReveal: async ({ threadId, path }) => ({ ok: await tree.reveal(threadId, path).catch(() => false) }),
     treeClose: async ({ threadId }) => ({ closed: await tree.close(threadId).catch(() => false) }),
@@ -735,6 +746,8 @@ export default async function plugin(bb: BbPluginApi) {
           if (!environmentId) return;
           const changes = new Set(event.changes);
           if (changes.has("work-status-changed") || changes.has("git-refs-changed")) reviews.noteChange(environmentId);
+          // The file trees reading this environment read their open folders again.
+          if (changes.has("work-status-changed") || changes.has("git-refs-changed")) files.environmentChanged(environmentId);
           if (changes.has("work-status-changed")) {
             if ((activeByEnvironment.get(environmentId)?.size ?? 0) > 0) service.noteAgentEdit(environmentId);
             follower.onEnvironmentChanged(environmentId);
@@ -762,6 +775,7 @@ export default async function plugin(bb: BbPluginApi) {
     setActive(thread.id, thread.environmentId ?? null, false);
     bridge.threadActivity(thread.id, thread.environmentId ?? null);
     void follower.onTurnEnd(thread.id, thread.environmentId ?? null);
+    files.anything(thread.id);
     // An active review there catches up with what the turn did.
     if (thread.environmentId) reviews.noteChange(thread.environmentId);
   });
@@ -769,6 +783,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(() => {
     if (positionTimer) clearTimeout(positionTimer);
+    files.dispose();
     follower.dispose();
     annotator.dispose();
     watcher.dispose();
