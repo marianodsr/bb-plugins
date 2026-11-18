@@ -94,7 +94,48 @@
   background-color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
 }
 
+/* The agent's trail: a dot in its text colour (violet, from its class), breathing while its turn runs (the one moving thing in the tree). */
+.helix-files-agent-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+}
+.helix-files-agent-live {
+  /* Breathing only: a ring mixed from currentColor rendered yellow in Chromium's light theme. */
+  animation: helix-files-breathe 1.4s ease-in-out infinite;
+}
+@keyframes helix-files-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+/* The review at a glance: a file not viewed, or how many inside a closed folder. */
+.helix-files-unviewed-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: var(--file-accent, var(--primary));
+  font-size: 0;
+}
+.helix-files-unviewed-count {
+  flex-shrink: 0;
+  color: var(--file-accent, var(--primary));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* A file the agent is writing. */
+.helix-files-writing {
+  animation: helix-files-breathe 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .helix-files-agent-live,
+  .helix-files-writing {
+    animation: none;
+  }
   .helix-files-arrive,
   .helix-files-mark {
     animation: none;

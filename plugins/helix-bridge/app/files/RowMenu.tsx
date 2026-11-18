@@ -84,7 +84,7 @@ export function RowMenu({ x, y, items, onClose }: { x: number; y: number; items:
             )}
           >
             <span className="truncate">{item.label}</span>
-            <ShortcutHint combo={item.combo} />
+            {item.combo ? <ShortcutHint combo={item.combo} /> : null}
           </div>
         </div>
       ))}

@@ -3,11 +3,23 @@
 import type { DirListing, FileEntry } from "./types";
 
 export type Row =
-  | { type: "entry"; path: string; name: string; depth: number; kind: "file" | "dir"; link: boolean; open: boolean; hidden: boolean; match?: readonly number[] }
+  | {
+      type: "entry";
+      path: string;
+      name: string;
+      depth: number;
+      kind: "file" | "dir";
+      link: boolean;
+      open: boolean;
+      hidden: boolean;
+      match?: readonly number[];
+      /** Not on disk: the agent is writing it (asked from the new-file field), or deleted it (its trail). */
+      state?: "writing" | "deleted";
+    }
   /** A row that says something about a folder: loading, empty, unreadable, more than listed. */
   | { type: "note"; key: string; depth: number; tone: "loading" | "muted" | "error"; text: string }
   /** The row a new file or folder is being named in. */
-  | { type: "draft"; key: "draft"; depth: number; dir: string; folder: boolean };
+  | { type: "draft"; key: "draft" | "draft:about"; depth: number; dir: string; folder: boolean };
 
 export const rowKey = (row: Row) => (row.type === "entry" ? row.path : row.key);
 

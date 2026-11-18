@@ -582,3 +582,75 @@ conservatively. Newest last.
       comments with no Helix behind them, for `kit/scripts/shoot.mjs`
       (checked in light and dark at the rail's width).
 
+
+## The native file tree (docs/HELIX_FILES.md)
+
+95. **The tree is bb's own interface, not yazi redrawn** (the owner's
+    correction, the same day). A first plan copied yazi: its preset theme's
+    Nerd Font icons and colours, a canvas check for the font, a prompt line
+    at the foot. That was dropped before it was committed. What there is
+    (`app/files`): a search field at the top that narrows the tree to what
+    matches (the query's parts in order, smart case, the letters marked),
+    new file and rename as fields in place in the row, trash and delete as a
+    worded bar with two buttons, a right-click row menu that names every key,
+    and the pointer as good as the keyboard (click, Cmd-click, Shift-click,
+    double click). Names are in bb's interface type; rows are 28 px with
+    hairline guides. Not wired into the rail yet: the coordinator does that
+    with the RPC-backed source.
+96. **Its icons are its own** (`app/files/icons.tsx`, inline SVG): every
+    file is a page with a folded corner; a kind the tree knows fills the page
+    with its hue and writes one or two letters on it (`go`, `bz`, `ts`,
+    `py`, `rs`, `sh`, `md`, `pb`…) or a small mark (braces for JSON, lines
+    for configuration, a padlock for lock files, a picture for images). Hues
+    are Tailwind's palette as classes (DESIGN.md's categorical tints), with
+    `in-[.dark]:`; no hex anywhere. Folders are outlines in the text colour,
+    so names and kinds are what the eye finds.
+97. **A cursor move adds nothing to the page.** Measured in the preview: in
+    bb's page, putting any element (even a text node) inside the panel group
+    costs about 8 ms of style work (a `:has()` rule of bb's over
+    `[data-panel-group]`), while a class, an attribute or a text changing
+    costs nothing. The first tree took 26 ms from `j` to a painted frame
+    with 5 000 rows, 19 ms of it style. Now the cursor's bar and the depth
+    guides are pseudo-elements, every row has the same elements whatever it
+    shows (marks are hidden by class, never removed), rows are keyed by
+    their slot in a window of one length that moves by blocks of 16, and
+    the icon is one SVG whose paths change. `j` with 5 000 rows: 3 ms to
+    React's commit, 10 ms to the painted frame (p95 14 ms); see 101.
+98. **Cursor, selection and hover are three states.** The cursor is grey
+    (`state-active`) with a bar at the row's edge, solid while the list has
+    the keyboard; hover is `state-hover`; the selection is bb's own
+    `--file-accent` at 15 %, the one host token with a hue, so it never reads
+    as the cursor. The search's matched letters use the same accent.
+99. **Folders are cached per thread, the place per thread.** The listings
+    live in a module store (`filesStore`, it outlives the rail); reads asked
+    in the same tick go in one `list` (chunks of 64); a folder the tree
+    changed itself drops any read that started before the change, so a slow
+    old answer never undoes an optimistic create, rename, paste or trash.
+    `railMemory` keeps the open folders, the cursor (by path), dot files,
+    the scroll and what waits to be pasted. The list is one element from the
+    first frame (the skeleton is inside it), so the focus the rail gives it
+    survives the first listing.
+100. **The tree talks to the thread** (the owner: "include things only bb
+    has"), through `ThreadLink`, only when the user acts on a row: `s` puts
+    the rows in the thread's composer as bb's own path mentions (folders
+    too) with the suite's flight, `i` opens an Ask box with ready questions
+    that fit, Tab in the new-file field asks the agent to write the file
+    (the row says "being written" until it exists, then Helix opens it),
+    `t` narrows to the agent's files (a violet dot on them and on closed
+    folders that hold them, breathing while its turn runs), files not viewed
+    have a dot and open comments a count (closed folders add them up), and
+    a folder's menu has New thread here. `threadLink.ts` holds bb's side:
+    mentions through `useComposers()` and `insert`, the chat revealed with
+    the page's chat tab. Two pieces must be registered in app.tsx to work:
+    `FilesDropBanner` (bb's composer takes app drops of threads only, so
+    rows dragged from the tree drop on a place the plugin draws in it) and
+    `NewThreadMentions` (`toCompose`'s prompt turns only thread, project and
+    section tokens into pills, so the folder's mention is put in once the
+    new-thread composer is on screen).
+101. **Measured** (headless Chrome, the preview, `app/files/measure.mjs`,
+    with the preview's fake agent turn running): `j` with 5 000 rows loaded,
+    3 ms to React's commit, 9.8 ms median to the painted frame, p95 14.4 ms,
+    max 16.3 ms (a key the tree ignores: 5.3 ms). The rail opened again from
+    the warm cache to its first painted frame: 56 ms median, about 23 ms of
+    it the one style pass of putting the rows into bb's page (97); it was
+    38 to 45 ms before the thread's marks added three elements to a row.

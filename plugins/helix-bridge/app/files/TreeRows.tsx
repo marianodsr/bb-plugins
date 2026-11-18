@@ -3,6 +3,7 @@
 // so moving the cursor re-renders two rows, not the list.
 import { memo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import type { Marks } from "./agent";
 import { EntryIcon, FileIcon, FolderIcon, UiGlyph } from "./icons";
 import { rowKey, stemLength, type Row } from "./model";
 
@@ -34,6 +35,12 @@ export interface Editing {
   submit(value: string): void;
   cancel(): void;
   change(value: string): void;
+  /** A new file: what the agent should write in it (null: not asked), and which field has the keyboard. */
+  about?: string | null;
+  field?: "name" | "about";
+  changeAbout?(about: string): void;
+  /** Tab between the name and `about`; absent when the agent cannot be asked. */
+  tab?(): void;
 }
 
 export function TreeRows({
@@ -55,6 +62,10 @@ export function TreeRows({
   onFocusChange,
   onScrolled,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
+  marks,
+  draggable = false,
   children,
 }: {
   listRef: React.RefObject<HTMLDivElement | null>;
@@ -75,6 +86,10 @@ export function TreeRows({
   onFocusChange(focused: boolean): void;
   onScrolled(top: number): void;
   onContextMenu(event: React.MouseEvent<HTMLDivElement>): void;
+  onDragStart?(event: React.DragEvent<HTMLDivElement>): void;
+  onDragEnd?(): void;
+  marks?: Marks;
+  draggable?: boolean;
   children?: ReactNode;
 }) {
   const [height, setHeight] = useState(0);
@@ -117,6 +132,8 @@ export function TreeRows({
       onFocus={(event) => event.target === event.currentTarget && onFocusChange(true)}
       onBlur={(event) => event.target === event.currentTarget && onFocusChange(false)}
       onContextMenu={onContextMenu}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onScroll={(event) => onScrolled(event.currentTarget.scrollTop)}
       className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain py-1 outline-none"
     >
@@ -128,6 +145,10 @@ export function TreeRows({
           const slot = index >= first && index < last ? `slot:${index - first}` : `cursor:${rowKey(row)}`;
           if (row.type === "note") return <NoteRow key={`note:${slot}`} index={index} row={row} />;
           if (row.type === "draft") return <DraftRow key={rowKey(row)} index={index} row={row} editing={editing} />;
+          // The thread's marks: on a file its own, on a closed folder what it holds.
+          const file = row.kind === "file";
+          const closed = row.kind === "dir" && !row.open;
+          const agentFile = file ? marks?.agent.get(row.path) : undefined;
           return (
             <EntryRow
               key={slot}
@@ -143,6 +164,11 @@ export function TreeRows({
               marked={mark === row.path}
               arrived={arrived.has(row.path)}
               pointer={pointer}
+              draggable={draggable}
+              agent={agentFile ? agentFile.turn : closed ? (marks?.agentIn.get(row.path) ?? null) : null}
+              agentChange={agentFile?.change ?? null}
+              comments={file ? (marks?.comments.get(row.path) ?? 0) : closed ? (marks?.commentsIn.get(row.path) ?? 0) : 0}
+              unviewed={file ? (marks?.unviewed.has(row.path) ? 1 : 0) : closed ? (marks?.unviewedIn.get(row.path) ?? 0) : 0}
             />
           );
         })}
@@ -169,6 +195,11 @@ const EntryRow = memo(function EntryRow({
   marked,
   arrived,
   pointer,
+  draggable,
+  agent,
+  agentChange,
+  comments,
+  unviewed,
 }: {
   index: number;
   row: Extract<Row, { type: "entry" }>;
@@ -182,8 +213,15 @@ const EntryRow = memo(function EntryRow({
   marked: boolean;
   arrived: boolean;
   pointer: RowPointer;
+  draggable: boolean;
+  agent: "running" | "last" | null;
+  agentChange: "edited" | "created" | "deleted" | null;
+  comments: number;
+  unviewed: number;
 }) {
   const dir = row.kind === "dir";
+  const gone = row.state === "deleted";
+  const writing = row.state === "writing";
   // The same element can show another entry after a scroll: the chevron turns only for its own folder.
   const shown = useRef(row.path);
   const same = shown.current === row.path;
@@ -204,7 +242,9 @@ const EntryRow = memo(function EntryRow({
       data-focused={focused ? "" : undefined}
       data-selected={selected ? "" : undefined}
       data-cut={cut ? "" : undefined}
-      title={row.path}
+      title={writing ? `${row.path}: the agent is writing it` : gone ? `${row.path}: the agent deleted it` : row.path}
+      draggable={draggable && !editing && !row.state ? true : undefined}
+      data-state={row.state}
       style={place(index, row.depth)}
       onMouseDown={(event) => pointer.down(index, event)}
       onClick={(event) => pointer.click(index, event)}
@@ -224,26 +264,51 @@ const EntryRow = memo(function EntryRow({
         {editing ? (
           <NameField editing={editing} selectStem />
         ) : (
-          <span className={cn("min-w-0 truncate", row.hidden ? "text-muted-foreground" : "text-foreground", isCursor && "font-medium")}>
+          <span className={cn("min-w-0 truncate", row.hidden || row.state ? "text-muted-foreground" : "text-foreground", isCursor && "font-medium", gone && "line-through", writing && "italic")}>
             {row.match ? <Name name={row.name} match={row.match} /> : row.name}
           </span>
         )}
+        {writing ? <span className="helix-files-writing shrink-0 text-xs text-muted-foreground">being written</span> : null}
         {row.link ? (
           <span title="A link" className="flex shrink-0 text-muted-foreground" data-link>
             <UiGlyph name="link" className="size-3" />
           </span>
         ) : null}
       </span>
+      {/* The thread's marks, always there and shown by class (see BLOCK). */}
+      <span
+        title={agent ? agentTitle(dir, agent, agentChange) : undefined}
+        aria-label={agent ? agentTitle(dir, agent, agentChange) : undefined}
+        className={cn("helix-files-agent-dot ml-1.5 text-violet-500 in-[.dark]:text-violet-400", agent === "running" && "helix-files-agent-live", !agent && "hidden")}
+      />
+      <span
+        title={comments ? `${comments} open comment${comments === 1 ? "" : "s"}${dir ? " inside" : ""}` : undefined}
+        className={cn("ml-1.5 rounded-[4px] bg-amber-500/15 px-1 text-[10px] leading-4 tabular-nums text-amber-700 in-[.dark]:text-amber-300", !comments && "hidden")}
+      >
+        {comments || " "}
+      </span>
+      <span
+        title={unviewed ? (dir ? `${unviewed} file${unviewed === 1 ? "" : "s"} not viewed inside` : "Not viewed") : undefined}
+        aria-label={unviewed ? (dir ? `${unviewed} not viewed` : "Not viewed") : undefined}
+        className={cn("helix-files-unviewed ml-1.5", dir ? "helix-files-unviewed-count" : "helix-files-unviewed-dot", !unviewed && "hidden")}
+      >
+        {dir && unviewed ? unviewed : " "}
+      </span>
       <span
         title={status?.label ?? (changedInside ? "Has changes" : undefined)}
         aria-label={!status && changedInside ? "Has changes" : undefined}
-        className={cn("ml-2 flex w-3 shrink-0 items-center justify-center font-mono text-[11px]", status?.className, !status && changedInside && "helix-files-changed")}
+        className={cn("ml-2 flex w-3 shrink-0 items-center justify-center font-mono text-[11px]", status?.className, !status && changedInside && !unviewed && "helix-files-changed")}
       >
         {status ? status.letter : " "}
       </span>
     </div>
   );
 });
+
+function agentTitle(dir: boolean, turn: "running" | "last", change: string | null): string {
+  const when = turn === "running" ? "in the turn running now" : "in its last turn";
+  return dir ? `The agent changed files in here ${when}` : `The agent ${change ?? "changed"} this ${when}`;
+}
 
 /** The name with the search's matched letters marked. */
 function Name({ name, match }: { name: string; match: readonly number[] | undefined }) {
@@ -287,15 +352,86 @@ function NoteRow({ index, row }: { index: number; row: Extract<Row, { type: "not
 
 function DraftRow({ index, row, editing }: { index: number; row: Extract<Row, { type: "draft" }>; editing: Editing | null }) {
   if (!editing) return null;
+  if (row.key === "draft:about")
+    return (
+      <div style={place(index, row.depth)} className="helix-files-row absolute inset-x-1 top-0 flex h-7 items-center rounded-md bg-state-active pr-2 text-[13px]" data-draft="about">
+        <span className="helix-files-arrive flex min-w-0 flex-1 items-center gap-1.5" style={indent(row.depth)}>
+          <span className="w-3 shrink-0" />
+          <span className="helix-files-agent-dot ml-[5px] mr-[5px] text-violet-500 in-[.dark]:text-violet-400" aria-hidden />
+          <TextField
+            value={editing.about ?? ""}
+            active={editing.field === "about"}
+            placeholder="What should it contain? The agent writes it"
+            label="What the agent should write in the new file"
+            onChange={(v) => editing.changeAbout?.(v)}
+            onEnter={() => editing.submit(editing.value)}
+            onEscape={editing.cancel}
+            onTab={editing.tab}
+          />
+        </span>
+      </div>
+    );
   const folder = row.folder || editing.value.endsWith("/");
   return (
     <div style={place(index, row.depth)} className="helix-files-row absolute inset-x-1 top-0 flex h-7 items-center rounded-md bg-state-active pr-2 text-[13px]" data-draft>
       <span className="helix-files-arrive flex min-w-0 flex-1 items-center gap-1.5" style={indent(row.depth)}>
         <span className="w-3 shrink-0" />
         {folder ? <FolderIcon open={false} className="text-muted-foreground" /> : <FileIcon name={editing.value} />}
-        <NameField editing={editing} placeholder={row.folder ? "Folder name" : "File name, or a/b/ for folders"} />
+        <TextField
+          value={editing.value}
+          active={editing.field !== "about"}
+          placeholder={row.folder ? "Folder name" : editing.tab ? "File name; Tab to have the agent write it" : "File name, or a/b/ for folders"}
+          label={row.folder ? "Folder name" : "File name"}
+          onChange={editing.change}
+          onEnter={() => editing.submit(editing.value)}
+          onEscape={editing.cancel}
+          onTab={editing.tab}
+        />
       </span>
     </div>
+  );
+}
+
+/** A field of the draft row: it takes the keyboard when it becomes the active one; leaving the draft drops it. */
+function TextField({ value, active, placeholder, label, onChange, onEnter, onEscape, onTab }: { value: string; active: boolean; placeholder: string; label: string; onChange(v: string): void; onEnter(): void; onEscape(): void; onTab?: () => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useLayoutEffect(() => {
+    if (active) input.current?.focus({ preventScroll: true });
+  }, [active]);
+  return (
+    <input
+      ref={input}
+      value={value}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoComplete="off"
+      aria-label={label}
+      data-files-field
+      onChange={(event) => onChange(event.target.value)}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          done.current = true;
+          onEnter();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          done.current = true;
+          onEscape();
+        } else if (event.key === "Tab" && onTab) {
+          event.preventDefault();
+          onTab();
+        }
+      }}
+      onBlur={(event) => {
+        // Moving between the draft's own fields keeps it.
+        if (!done.current && !(event.relatedTarget as HTMLElement | null)?.closest?.("[data-draft]")) onEscape();
+      }}
+      className="h-6 min-w-0 flex-1 rounded-[5px] border border-ring/60 bg-background px-1.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
+    />
   );
 }
 

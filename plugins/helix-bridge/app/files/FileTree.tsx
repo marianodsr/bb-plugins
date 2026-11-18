@@ -2,20 +2,28 @@
 // plugin draws, keyboard first and as good with the pointer. It reads and
 // changes files only through a FilesSource (types.ts); the folders it has
 // read live in filesStore, so opening the rail again draws at once and then
-// refreshes what is open in one `list`. docs/HELIX_FILES.md is the design.
+// refreshes what is open in one `list`. Beside the agent it can also hand
+// rows to the thread, ask about them, have a file written, and show the
+// agent's trail and the review (ThreadLink, agent.ts). docs/HELIX_FILES.md is
+// the design.
 import "./tree.css";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangedFile } from "../../server";
+import type { ChangedFile, RailComment } from "../../server";
 import { cn } from "@/lib/utils";
-import { Kbd, ProgressLine, SkeletonRows, useHotkeys, type Hotkey } from "../../kit";
+import { usePortalScopeProps } from "@/lib/portal-scope";
+import { Kbd, prefersReducedMotion, ProgressLine, SkeletonRows, useHotkeys, type Hotkey } from "../../kit";
+import { startFlight } from "../../kit/handoff/flight";
 import { railMemory } from "../rail/railMemory";
 import { editorFocus } from "../rail/railStore";
+import { agentRows, useAgentFiles, useMarks } from "./agent";
+import { AskBox, type AskTarget } from "./AskBox";
 import { patchDirs, filesCache, readDirs, useFilesVersion } from "./filesStore";
+import { composerElement, DRAG_TYPE, draggedRows } from "./handoff";
 import { UiGlyph } from "./icons";
 import { ancestors, badName, flatten, freeName, insertEntry, joinPath, nameOf, parentOf, removeEntry, rowKey, searchRows, type Row } from "./model";
 import { RowMenu, type MenuItem } from "./RowMenu";
 import { ROW, TreeRows, type Editing, type RowPointer, type Status } from "./TreeRows";
-import type { DirListing, FileEntry, FileOp, FilesSource } from "./types";
+import type { DirListing, FileEntry, FileOp, FilesSource, ThreadLink } from "./types";
 
 export interface FileTreeHandle {
   /** Open the folders on the way (one `list`), put the cursor on the file and centre it. */
@@ -29,8 +37,12 @@ export interface FileTreeProps {
   threadId: string;
   /** Close the rail. The tree then gives Helix the keyboard (`editorFocus`). */
   onLeave?(): void;
-  /** The active review's files, for their status letters (the Changes tab's `useChanges`). */
-  changes?: readonly Pick<ChangedFile, "path" | "status">[] | null;
+  /** The thread: send rows to it, ask about them, have files written, the agent's trail. Without it those are not offered. */
+  link?: ThreadLink | null;
+  /** The active review's files (the Changes tab's `useChanges`): status letters, and a dot on those not viewed. */
+  changes?: readonly (Pick<ChangedFile, "path" | "status"> & { viewed?: boolean })[] | null;
+  /** The review's comments (the Comments tab's `useComments`): open ones are counted on their files. */
+  comments?: readonly Pick<RailComment, "path" | "state">[] | null;
   /** The `treeStaysOpen` setting: opening a file keeps the rail. */
   staysOpen?: boolean;
   /** The workspace's absolute path (`filesList`'s `root`): `c` copies absolute paths with it, relative ones without. */
@@ -51,9 +63,10 @@ const PREFETCH_MS = 60;
 
 type Confirm = { action: "trash" | "delete"; paths: string[] };
 type Notice = { text: string; tone: "error" | "info"; at: number };
-type Draft = { kind: "create"; dir: string; folder: boolean; value: string } | { kind: "rename"; path: string; value: string };
+/** A name being typed in place. A new file can also carry what the agent should write in it (`about`, after Tab). */
+type Draft = { kind: "create"; dir: string; folder: boolean; value: string; about: string | null; field: "name" | "about" } | { kind: "rename"; path: string; value: string };
 
-export function FileTree({ source, threadId, onLeave, changes, staysOpen = false, root = null, handle }: FileTreeProps) {
+export function FileTree({ source, threadId, onLeave, link = null, changes, comments, staysOpen = false, root = null, handle }: FileTreeProps) {
   const memory = railMemory(threadId).files;
   const version = useFilesVersion(threadId);
   const cache = filesCache(threadId);
@@ -88,6 +101,14 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   const [mark, setMark] = useState<string | null>(null);
   const [arrived, setArrived] = useState<ReadonlySet<string>>(EMPTY);
   const [focused, setFocused] = useState(false);
+  /** `t`: the tree narrowed to the agent's files. */
+  const [agentView, setAgentView] = useState(false);
+  const [ask, setAsk] = useState<{ targets: AskTarget[]; top: number } | null>(null);
+  /** Files the agent was asked to write, by path, until they exist: the folder the row shows in. */
+  const [writing, setWriting] = useState<ReadonlyMap<string, string>>(new Map());
+  const agent = useAgentFiles(link);
+  const marks = useMarks(agent, changes, comments);
+  const scope = usePortalScopeProps() as unknown as Record<string, string>;
   const pendingKey = useRef<{ key: string; at: number } | null>(null);
   /** Centre the cursor's row on the next layout (reveal, first open). */
   const centre = useRef(memory.scroll === null);
@@ -107,15 +128,29 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   // ---- rows ----------------------------------------------------------------
   const searching = query.trim() !== "";
   const baseRows = useMemo(() => flatten(cache.dirs, open, showHidden), [version, open, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shownRows = useMemo(() => (searching ? searchRows(cache.dirs, query, showHidden) : baseRows), [searching, query, baseRows, version, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+  const agentList = agent?.files;
+  const shownRows = useMemo(
+    () => (agentView ? agentRows(agentList ?? []) : searching ? searchRows(cache.dirs, query, showHidden) : baseRows),
+    [agentView, agentList, searching, query, baseRows, version, showHidden], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const rows = useMemo(() => {
-    if (draft?.kind !== "create") return shownRows;
-    const at = draft.dir === "" ? 0 : shownRows.findIndex((r) => r.type === "entry" && r.path === draft.dir) + 1;
-    const depth = draft.dir === "" ? 0 : (shownRows[at - 1]?.depth ?? 0) + 1;
-    const out = [...shownRows];
-    out.splice(Math.max(0, at), 0, { type: "draft", key: "draft", depth, dir: draft.dir, folder: draft.folder });
+    let out: Row[] = shownRows;
+    // Inserted at the top of their folder's rows, when that folder is showing.
+    const place = (dir: string, made: Row[]) => {
+      const at = dir === "" ? 0 : out.findIndex((r) => r.type === "entry" && r.path === dir && r.open) + 1;
+      if (dir !== "" && at === 0) return;
+      const depth = dir === "" ? 0 : (out[at - 1]?.depth ?? 0) + 1;
+      out = [...out.slice(0, at), ...made.map((r) => ({ ...r, depth })), ...out.slice(at)];
+    };
+    if (!agentView && !searching)
+      for (const [path, dir] of writing) if (!indexOfPath(out, path)) place(dir, [{ type: "entry", path, name: path.slice(dir ? dir.length + 1 : 0), depth: 0, kind: "file", link: false, open: false, hidden: false, state: "writing" }]);
+    if (draft?.kind === "create") {
+      const made: Row[] = [{ type: "draft", key: "draft", depth: 0, dir: draft.dir, folder: draft.folder }];
+      if (draft.about !== null) made.push({ type: "draft", key: "draft:about", depth: 0, dir: draft.dir, folder: false });
+      place(draft.dir, made);
+    }
     return out;
-  }, [shownRows, draft]);
+  }, [shownRows, draft, writing, agentView, searching]);
   const indexOf = useMemo(() => {
     const map = new Map<string, number>();
     rows.forEach((r, i) => map.set(rowKey(r), i));
@@ -126,7 +161,7 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   const lastAt = useRef(0);
   const found = cursorPath === null ? undefined : indexOf.get(cursorPath);
   let at = found ?? Math.min(lastAt.current, rows.length - 1);
-  if (draft?.kind === "create") at = indexOf.get("draft") ?? at;
+  if (draft?.kind === "create") at = indexOf.get(draft.field === "about" ? "draft:about" : "draft") ?? at;
   else if (found === undefined && rows[at]?.type !== "entry") at = nearestStop(rows, at);
   if (rows.length > 0 && at >= 0) lastAt.current = at;
   const currentRow = rows[at];
@@ -145,7 +180,7 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   };
 
   /** The folder the cursor is on when it is open, else the one holding its row. */
-  const cursorFolder = (): string => (current ? (current.kind === "dir" && current.open && !searching ? current.path : parentOf(current.path)) : "");
+  const cursorFolder = (): string => (current ? (current.kind === "dir" && current.open && !searching && !agentView ? current.path : parentOf(current.path)) : "");
   /** The selection, or the cursor's row. */
   const targets = (): string[] => (selected.size > 0 ? [...selected] : current ? [current.path] : []);
 
@@ -162,6 +197,8 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   const visibleOpen = useCallback((openSet: ReadonlySet<string>) => ["", ...[...openSet].filter((p) => ancestors(p).every((a) => a === "" || openSet.has(a)))], []);
   const openRef = useRef(open);
   openRef.current = open;
+  const writingRef = useRef(writing);
+  writingRef.current = writing;
 
   // Opening the rail: drawn from the cache already; now every open folder, in one `list`.
   useEffect(() => {
@@ -173,6 +210,8 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
     () =>
       source.onChanged((dirs) => {
         const showing = new Set(visibleOpen(openRef.current));
+        // The folders of files being written are read too, to see them arrive.
+        for (const path of writingRef.current.keys()) showing.add(parentOf(path));
         const wanted = dirs === null ? [...showing] : dirs.filter((d) => showing.has(d));
         if (wanted.length) void readDirs(threadId, source, wanted);
       }),
@@ -276,7 +315,8 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
     setQuery("");
     setMenu(null);
     if (dir && !open.has(dir)) openFolder(dir);
-    setDraft({ kind: "create", dir, folder, value: "" });
+    setAgentView(false);
+    setDraft({ kind: "create", dir, folder, value: "", about: null, field: "name" });
   };
   const create = async (dir: string, input: string, folderDraft: boolean) => {
     const problem = badName(input, true);
@@ -312,12 +352,55 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
     flashArrived([full], null);
     const made = await run({ kind: "create", path: isDir ? `${full}/` : full }, patches, [dir, ...ancestors(full).filter((d) => d.startsWith(dir))], () => {
       setCursor(previous);
-      setDraft({ kind: "create", dir, folder: folderDraft, value: input });
+      setDraft({ kind: "create", dir, folder: folderDraft, value: input, about: null, field: "name" });
     });
     if (made?.[0]) setCursor(made[0]);
     focusList();
     return true;
   };
+
+  /** Tab in the new-file field: ask the agent to write it instead. Not for folders. */
+  const writeFile = async (dir: string, input: string, about: string) => {
+    if (!link) return;
+    const problem = badName(input, true) ?? (input.endsWith("/") ? "The agent writes files; a name ending in / is a folder" : null);
+    if (problem) return say(problem, "error");
+    const full = joinPath(dir, input);
+    if (listing(parentOf(full))?.entries.some((e) => e.name === nameOf(full))) return say(`${nameOf(full)} is already there`, "error");
+    setDraft(null);
+    const next = new Map(writing);
+    next.set(full, dir);
+    setWriting(next);
+    setCursor(full);
+    focusList();
+    const sent = await link.write(full, about);
+    if (sent.ok) say(`Sent to ${threadTitle}: write ${nameOf(full)}`);
+    else {
+      setWriting((w) => {
+        const m = new Map(w);
+        m.delete(full);
+        return m;
+      });
+      setDraft({ kind: "create", dir, folder: false, value: input, about, field: "about" });
+      say(sent.error ?? "The thread did not take it", "error");
+    }
+  };
+  // A file being written is done when its folder lists it: Helix opens it, and it arrives in place.
+  useEffect(() => {
+    if (writing.size === 0) return;
+    const done = [...writing.keys()].filter((path) => cache.dirs.get(parentOf(path))?.entries.some((e) => e.name === nameOf(path)));
+    if (done.length === 0) return;
+    setWriting((w) => {
+      const m = new Map(w);
+      for (const path of done) m.delete(path);
+      return m;
+    });
+    const next = new Set(open);
+    for (const path of done) for (const f of ancestors(path)) if (f) next.add(f);
+    setOpen(next);
+    flashArrived(done, null);
+    for (const path of done) void source.open(path).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
 
   const startRename = () => {
     if (!current) return;
@@ -445,6 +528,103 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
     });
   };
 
+  // ---- the thread ----------------------------------------------------------
+  const threadTitle = link?.thread.title ?? "the thread";
+  const kindOf = (path: string): "file" | "dir" => {
+    const row = rows[indexOf.get(path) ?? -1];
+    return row?.type === "entry" ? row.kind : entryOf(path).kind;
+  };
+  /** Folders end with `/` in what goes to the thread's composer (ThreadLink's paths carry no kind). */
+  const asMentions = (paths: string[]) => paths.map((p) => (kindOf(p) === "dir" ? `${p}/` : p));
+  const rowElements = (paths: string[]) => paths.map((p) => listRef.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(p)}"]`)).filter((el): el is HTMLElement => Boolean(el));
+
+  /** `s`: the rows go to the thread's composer as mentions, with the suite's flight to it. */
+  const sendToThread = async () => {
+    const paths = targets();
+    if (!link || paths.length === 0) return;
+    setMenu(null);
+    let flight: ReturnType<typeof startFlight> | null = null;
+    try {
+      if (!prefersReducedMotion()) flight = startFlight({ sources: rowElements(paths), origin: listRef.current, target: () => composerElement(threadId), label: paths.length === 1 ? nameOf(paths[0]!) : `${paths.length} entries`, scope });
+    } catch {
+      flight = null;
+    }
+    const sent = await link.mention(asMentions(paths));
+    if (!sent.ok) {
+      await flight?.returnHome();
+      return say(sent.error ?? "The composer did not take them", "error");
+    }
+    await flight?.finished;
+    setSelected(EMPTY);
+    say(`Sent to ${threadTitle}`);
+    // The chat has the keyboard now; the rail goes away.
+    onLeave?.();
+  };
+
+  /** `i`: the Ask box on the cursor's row. */
+  const startAsk = () => {
+    const paths = targets();
+    if (!link || paths.length === 0) return;
+    setMenu(null);
+    const rowEl = listRef.current?.querySelector<HTMLElement>("[data-cursor-row]")?.getBoundingClientRect();
+    const box = boxRef.current?.getBoundingClientRect();
+    setAsk({ targets: paths.map((path) => ({ path, kind: kindOf(path) })), top: rowEl && box ? rowEl.bottom - box.top + 4 : 48 });
+  };
+  const sendAsk = async (text: string): Promise<boolean> => {
+    if (!link || !ask) return false;
+    const sent = await link.ask(ask.targets.map((t) => t.path), text);
+    if (!sent.ok) {
+      say(sent.error ?? "The thread did not take it", "error");
+      return false;
+    }
+    setAsk(null);
+    setSelected(EMPTY);
+    say(`Sent to ${threadTitle}`);
+    // The chat shows the answer as it comes; the rail goes away.
+    onLeave?.();
+    return true;
+  };
+
+  /** `t`: the agent's files and back. */
+  const toggleAgentView = () => {
+    if (!link) return;
+    setMenu(null);
+    if (agentView) return endAgentView();
+    setQuery("");
+    setDraft(null);
+    setAgentView(true);
+    const first = agentRows(agent?.files ?? []).find((r) => r.type === "entry" && r.kind === "file");
+    if (first?.type === "entry") setCursor(first.path);
+  };
+  /** Back to the whole tree, on the row the cursor is on, its folders open. */
+  const endAgentView = () => {
+    setAgentView(false);
+    if (current && current.state !== "deleted") {
+      const next = new Set(open);
+      for (const f of ancestors(current.path)) if (f) next.add(f);
+      setOpen(next);
+      const missing = ancestors(current.path).filter((d) => !cache.dirs.has(d));
+      if (missing.length) void readDirs(threadId, source, missing);
+      centre.current = true;
+    }
+  };
+
+  const newThreadHere = () => {
+    if (!link?.newThread || !current) return;
+    setMenu(null);
+    link.newThread(asMentions([current.kind === "dir" ? current.path : parentOf(current.path) || current.path]));
+  };
+
+  const onDragStart = (event: React.DragEvent<HTMLDivElement>) => {
+    const rowEl = (event.target as HTMLElement).closest<HTMLElement>("[data-path]");
+    const path = rowEl?.dataset.path;
+    if (!path || !link) return event.preventDefault();
+    const paths = selected.has(path) ? [...selected] : [path];
+    event.dataTransfer.setData(DRAG_TYPE, JSON.stringify(asMentions(paths)));
+    event.dataTransfer.effectAllowed = "copy";
+    draggedRows.set(asMentions(paths));
+  };
+
   const copyPath = (path: string) => {
     const text = root ? `${root.replace(/\/+$/u, "")}/${path}` : path;
     const done = () => say(`Copied ${text}`);
@@ -505,6 +685,8 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
 
   const enter = () => {
     if (!current) return;
+    if (current.state === "deleted") return say(`The agent deleted ${current.name}`);
+    if (current.state === "writing") return say(`${current.name} is being written by ${threadTitle}`);
     if (current.kind === "file") openFile(current.path);
     else if (searching) {
       endSearch(true);
@@ -512,14 +694,14 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   };
   const right = () => {
     if (!current) return;
-    if (current.kind === "file") return openFile(current.path);
+    if (current.kind === "file") return enter();
     if (!current.open) return openFolder(current.path);
     const next = rows[at + 1];
     if (next?.type === "entry" && next.depth > current.depth) setCursor(next.path);
   };
   const left = () => {
     if (!current) return;
-    if (current.kind === "dir" && current.open && !searching) return closeFolder(current.path);
+    if (current.kind === "dir" && current.open && !searching && !agentView) return closeFolder(current.path);
     const parent = parentOf(current.path);
     if (parent && indexOf.has(parent)) setCursor(parent);
   };
@@ -527,6 +709,7 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   // ---- search --------------------------------------------------------------
   const startSearch = () => {
     setMenu(null);
+    setAgentView(false);
     searchRef.current?.focus();
     searchRef.current?.select();
   };
@@ -559,7 +742,9 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
   const escape = (): boolean => {
     if (menu) return setMenu(null), true;
     if (confirm) return setConfirm(null), true;
+    if (ask) return setAsk(null), true;
     if (searching) return endSearch(true), true;
+    if (agentView) return endAgentView(), true;
     if (clip) return setClip(null), true;
     if (selected.size > 0) return setSelected(EMPTY), (anchor.current = null), true;
     leave();
@@ -652,6 +837,12 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
         return handled(), toggleHidden();
       case "c":
         return current ? (handled(), copyPath(current.path)) : undefined;
+      case "s":
+        return link ? (handled(), void sendToThread()) : undefined;
+      case "i":
+        return link ? (handled(), startAsk()) : undefined;
+      case "t":
+        return link ? (handled(), toggleAgentView()) : undefined;
       case "ContextMenu":
         return handled(), openMenuAtCursor();
       case "F10":
@@ -686,6 +877,14 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
       described(["shift+d"], "Delete for good"),
       described(["."], "Show or hide dot files"),
       described(["c"], "Copy the path"),
+      ...(link
+        ? [
+            described(["s"], "Send to thread (as mentions in its composer)"),
+            described(["i"], "Ask the thread about it"),
+            described(["t"], "The agent's files, and back"),
+            described(["Tab"], "In a new file's name: have the agent write it"),
+          ]
+        : []),
       described(["Escape"], "Back one step, then close"),
     ],
     { scope: listRef },
@@ -754,7 +953,14 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
     focusList();
   };
   const menuItems: MenuItem[] = [
-    { label: "New file", combo: "a", run: () => startCreate(false) },
+    ...(link
+      ? [
+          { label: "Send to thread", combo: "s", run: () => void sendToThread(), disabled: !current },
+          { label: "Ask about it", combo: "i", run: startAsk, disabled: !current },
+          ...(link.newThread && current?.kind === "dir" ? [{ label: "New thread here", combo: "", run: newThreadHere }] : []),
+        ]
+      : []),
+    { label: "New file", combo: "a", run: () => startCreate(false), separated: Boolean(link) },
     { label: "New folder", combo: "shift+a", run: () => startCreate(true) },
     { label: "Rename", combo: "F2", run: startRename, disabled: !current, separated: true },
     { label: "Copy", combo: "mod+c", run: () => yank("copy"), disabled: !current },
@@ -813,9 +1019,19 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
           focusList();
         },
         submit: (value) => {
-          if (draft.kind === "create") void create(draft.dir, value, draft.folder);
-          else void rename(draft.path, value);
+          if (draft.kind === "rename") return void rename(draft.path, value);
+          if (draft.about?.trim()) void writeFile(draft.dir, draft.value, draft.about.trim());
+          else void create(draft.dir, draft.value, draft.folder);
         },
+        ...(draft.kind === "create"
+          ? {
+              about: draft.about,
+              field: draft.field,
+              changeAbout: (about: string) => setDraft((d) => (d?.kind === "create" ? { ...d, about } : d)),
+              // Tab: from the name to what the agent should write (a new file only, with a thread).
+              tab: link && !draft.folder ? () => setDraft((d) => (d?.kind === "create" ? { ...d, about: d.about ?? "", field: d.field === "name" ? "about" : "name" } : d)) : undefined,
+            }
+          : {}),
       }
     : null;
 
@@ -870,6 +1086,27 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
         <ToolButton label="New folder (Shift A)" glyph="newFolder" onClick={() => startCreate(true)} />
         <ProgressLine active={refreshing} className="bottom-0" />
       </div>
+      {link && (agentView || (agent?.files.length ?? 0) > 0) ? (
+        <div className="flex shrink-0 items-center gap-1 px-2 pb-1.5">
+          <button
+            type="button"
+            aria-pressed={agentView}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={toggleAgentView}
+            title={agentView ? "Back to every file (T)" : "Only the files the agent changed (T)"}
+            data-files-agent-chip
+            className={cn(
+              "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-xs transition-colors duration-[120ms] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              agentView ? "border-violet-500/40 bg-violet-500/15 text-violet-700 in-[.dark]:text-violet-300" : "border-border/70 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+            )}
+          >
+            <span className={cn("helix-files-agent-dot text-violet-500 in-[.dark]:text-violet-400", agent?.running && "helix-files-agent-live")} />
+            <span className="tabular-nums">{agent?.files.length ?? 0}</span>
+            {agent?.running ? "changing now" : "changed by the agent"}
+            <Kbd className="ml-0.5 h-4 min-w-4 text-[10px]">T</Kbd>
+          </button>
+        </div>
+      ) : null}
       {/* One list element from the first frame, so the focus the rail gives it stays when the rows arrive. */}
       <TreeRows
         listRef={listRef}
@@ -894,10 +1131,26 @@ export function FileTree({ source, threadId, onLeave, changes, staysOpen = false
           scrollFrame.current = requestAnimationFrame(() => setScroll(top));
         }}
         onContextMenu={onContextMenu}
+        onDragStart={onDragStart}
+        onDragEnd={() => draggedRows.set(null)}
+        marks={marks}
+        draggable={Boolean(link)}
       >
         {rootListing ? null : <SkeletonRows count={9} dense className="absolute inset-x-0 top-1" />}
       </TreeRows>
       {menu ? <RowMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} /> : null}
+      {ask && link ? (
+        <AskBox
+          targets={ask.targets}
+          top={ask.top}
+          thread={threadTitle}
+          onSend={sendAsk}
+          onClose={() => {
+            setAsk(null);
+            focusList();
+          }}
+        />
+      ) : null}
       <Foot
         notice={notice}
         confirm={confirm}
@@ -1060,3 +1313,5 @@ function renamePrefix(open: ReadonlySet<string>, from: string, to: string): Set<
 }
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+const indexOfPath = (rows: readonly Row[], path: string) => rows.some((r) => r.type === "entry" && r.path === path);

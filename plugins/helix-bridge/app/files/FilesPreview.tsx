@@ -7,18 +7,39 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { railMemory } from "../rail/railMemory";
 import { FileTree, type FileTreeHandle } from "./FileTree";
+import { memoryLink, type MemoryLink } from "./memoryLink";
 import { demoWorkspace, memorySource, type MemorySource } from "./memorySource";
 
 export const FILES_PREVIEW_PATH = "~files";
 const THREAD = "~files-preview";
 
 let source: MemorySource | null = null;
+let link: MemoryLink | null = null;
 const CHANGES = [
-  { path: "services/auth/session.go", status: "modified" as const },
-  { path: "services/auth/token.go", status: "modified" as const },
-  { path: "services/auth/middleware.go", status: "added" as const },
-  { path: "docs/sessions.md", status: "modified" as const },
+  { path: "services/auth/session.go", status: "modified" as const, viewed: false },
+  { path: "services/auth/token.go", status: "modified" as const, viewed: true },
+  { path: "services/auth/middleware.go", status: "added" as const, viewed: false },
+  { path: "services/gateway/router.go", status: "modified" as const, viewed: false },
+  { path: "docs/sessions.md", status: "modified" as const, viewed: false },
 ];
+const COMMENTS = [
+  { path: "services/auth/session.go", state: "unsent" as const },
+  { path: "services/auth/session.go", state: "answered" as const },
+  { path: "services/gateway/router.go", state: "sent" as const },
+  { path: "docs/sessions.md", state: "done" as const },
+];
+/** A turn of the fake agent: it splits the session errors, a few files at a time. */
+const TURN = [
+  [{ path: "services/auth/session.go", change: "edited" as const }],
+  [{ path: "services/auth/errors.go", change: "created" as const }],
+  [{ path: "services/auth/session_test.go", change: "edited" as const }, { path: "services/gateway/router.go", change: "edited" as const }],
+  [{ path: "docs/sessions.md", change: "edited" as const }],
+];
+/** The fake agent works in turns: about 8 s of work, then 10 s of quiet, again and again. */
+function startTurns(l: MemoryLink) {
+  const loop = () => void l.turn(TURN, 1600).then(() => window.setTimeout(loop, 10_000));
+  window.setTimeout(loop, 600);
+}
 
 declare global {
   interface Window {
@@ -30,6 +51,10 @@ declare global {
 
 export function FilesPreview() {
   source ??= memorySource(demoWorkspace(), { latency: 45 });
+  if (!link) {
+    link = memoryLink(source, { writeMs: 2500 });
+    startTurns(link);
+  }
   const memory = railMemory(THREAD).files;
   if (memory.cursor === null && memory.open.size === 0) {
     memory.open = new Set(["services", "services/auth"]);
@@ -62,7 +87,9 @@ export function FilesPreview() {
             <FileTree
               source={source}
               threadId={THREAD}
+              link={link}
               changes={CHANGES}
+              comments={COMMENTS}
               root="/Users/you/src/monorepo"
               handle={handle}
               onLeave={() => {

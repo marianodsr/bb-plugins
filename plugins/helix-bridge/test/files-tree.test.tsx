@@ -8,7 +8,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileTree, type FileTreeHandle, type FileTreeProps } from "../app/files/FileTree";
 import { resetFilesCache } from "../app/files/filesStore";
+import { DRAG_TYPE, draggedRows, mentionParts } from "../app/files/handoff";
 import { kindOf } from "../app/files/icons";
+import { memoryLink } from "../app/files/memoryLink";
 import { memorySource, type MemorySource, type MemoryWorkspace } from "../app/files/memorySource";
 import { matcher } from "../app/files/model";
 import { railMemory } from "../app/rail/railMemory";
@@ -120,6 +122,12 @@ afterEach(() => {
   host?.remove();
   root = null;
 });
+
+/** Until `ok` holds (rendering as it goes), or fail after a second. */
+async function waitFor(ok: () => boolean) {
+  for (let i = 0; i < 100 && !ok(); i++) await act(async () => await new Promise((r) => setTimeout(r, 10)));
+  expect(ok()).toBe(true);
+}
 
 async function keys(tree: Tree, ...sequence: string[]) {
   for (const k of sequence) await tree.press(k);
@@ -609,5 +617,212 @@ describe("the file tree", () => {
     observer.disconnect();
     expect(added).toEqual([]);
     // (Scrolling, which jsdom cannot do, is measured in Chrome: app/files/measure.mjs.)
+  });
+});
+
+describe("the tree and the agent", () => {
+  const withLink = async (options: Parameters<typeof memoryLink>[1] = {}, props: Partial<FileTreeProps> = {}) => {
+    const source = memorySource(workspace());
+    const link = memoryLink(source, { writeMs: 20, ...options });
+    const tree = await mount({ source, props: { link, ...props } });
+    return { tree, link };
+  };
+
+  it("sends the row, or the selection, to the thread's composer as mentions, folders marked as folders", async () => {
+    const { tree, link } = await withLink();
+    await keys(tree, "G", "s");
+    expect(link.mentioned).toEqual([["README.md"]]);
+    expect(document.querySelector("[data-files-notice=info]")?.textContent).toContain("Sent to Split session errors");
+    // The chat has the keyboard: the rail goes away (without giving Helix the keyboard).
+    expect(tree.onLeave).toHaveBeenCalledTimes(1);
+    await keys(tree, "g", "g", "j", " ", " ", "s");
+    expect(link.mentioned[1]).toEqual(["cmd/", "docs/"]);
+    expect(mentionParts(["docs/", "go.mod"])).toEqual([
+      { from: 0, to: 0, label: "docs", kind: "path", path: "docs", source: "workspace", entryKind: "directory" },
+      " ",
+      { from: 0, to: 0, label: "go.mod", kind: "path", path: "go.mod", source: "workspace", entryKind: "file" },
+      " ",
+    ]);
+  });
+
+  it("says why when the composer does not take them, and keeps the rail", async () => {
+    const { tree, link } = await withLink();
+    link.failNext("mention", "The chat did not open");
+    await keys(tree, "s");
+    expect(document.querySelector("[data-files-notice=error]")?.textContent).toContain("The chat did not open");
+    expect(tree.onLeave).not.toHaveBeenCalled();
+  });
+
+  it("asks about a row in a box with ready questions that fit it", async () => {
+    const { tree, link } = await withLink();
+    await keys(tree, "G", "i");
+    const box = document.querySelector<HTMLElement>("[data-files-ask]")!;
+    expect(box.getAttribute("aria-label")).toBe("Ask about README.md");
+    const field = box.querySelector<HTMLInputElement>("[data-files-ask-field]")!;
+    expect(document.activeElement).toBe(field);
+    const chips = Array.from(box.querySelectorAll("[data-files-ask-chip]")).map((c) => c.textContent);
+    expect(chips).toEqual(["Explain this file", "Who uses it?", "Write its tests", "Review it"]);
+    // No list key fires while the question is typed.
+    for (const k of ["j", "d", "s"]) expect((await tree.press(k, {}, field)).defaultPrevented).toBe(false);
+    expect(tree.cursor()).toBe("README.md");
+    // A chip fills the field; Enter sends it.
+    act(() => (box.querySelectorAll<HTMLButtonElement>("[data-files-ask-chip]")[1]!).click());
+    await settle();
+    expect(field.value).toBe("Who uses it?");
+    await tree.press("Enter", {}, field);
+    expect(link.asked).toEqual([{ paths: ["README.md"], text: "Who uses it?" }]);
+    expect(document.querySelector("[data-files-ask]")).toBeNull();
+    expect(tree.onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers folder questions on a folder, and Escape drops the question", async () => {
+    const { tree, link } = await withLink();
+    await keys(tree, "j", "i");
+    const box = document.querySelector<HTMLElement>("[data-files-ask]")!;
+    expect(Array.from(box.querySelectorAll("[data-files-ask-chip]")).map((c) => c.textContent)[0]).toBe("What is in here?");
+    await tree.type("why so many?", box.querySelector<HTMLInputElement>("[data-files-ask-field]"));
+    await tree.press("Escape", {}, box.querySelector("[data-files-ask-field]"));
+    expect(document.querySelector("[data-files-ask]")).toBeNull();
+    expect(link.asked).toEqual([]);
+    expect(tree.onLeave).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(tree.list());
+  });
+
+  it("has a new file written by the agent: Tab to say what, a row while it is written, then Helix opens it", async () => {
+    const { tree, link } = await withLink();
+    await keys(tree, "j", "j", "l", "a");
+    await tree.type("plan.md");
+    await tree.press("Tab", {}, tree.field());
+    const about = document.querySelector<HTMLInputElement>('[data-draft="about"] input')!;
+    expect(document.activeElement).toBe(about);
+    // Shift between the fields keeps the draft.
+    expect(tree.list().querySelector("[data-draft] input")).not.toBeNull();
+    await tree.type("The rollout plan for the session split", about);
+    await tree.press("Enter", {}, about);
+    expect(link.written).toEqual([{ path: "docs/plan.md", description: "The rollout plan for the session split" }]);
+    expect(tree.source.calls.some((c) => c.method === "op")).toBe(false);
+    const row = tree.list().querySelector<HTMLElement>('[data-path="docs/plan.md"]')!;
+    expect(row.dataset.state).toBe("writing");
+    expect(row.textContent).toContain("being written");
+    // The agent writes it; the end of its turn says files changed.
+    await waitFor(() => tree.list().querySelector<HTMLElement>('[data-path="docs/plan.md"]')?.dataset.state === undefined);
+    expect(tree.source.calls.filter((c) => c.method === "open").map((c) => c.path)).toEqual(["docs/plan.md"]);
+  });
+
+  it("shows the agent's trail, live while it runs, on files and closed folders, and t narrows to it", async () => {
+    const { tree, link } = await withLink();
+    act(() =>
+      link.setAgent({
+        running: true,
+        files: [
+          { path: "services/auth/token.go", change: "edited", turn: "running" },
+          { path: "docs/sessions.md", change: "edited", turn: "last" },
+          { path: "old.go", change: "deleted", turn: "last" },
+        ],
+      }),
+    );
+    await settle();
+    const dot = (path: string) => tree.list().querySelector<HTMLElement>(`[data-path="${path}"] .helix-files-agent-dot`)!;
+    expect(dot("services").classList.contains("hidden")).toBe(false);
+    expect(dot("services").classList.contains("helix-files-agent-live")).toBe(true);
+    expect(dot("docs").classList.contains("helix-files-agent-live")).toBe(false);
+    expect(dot("cmd").classList.contains("hidden")).toBe(true);
+    expect(document.querySelector("[data-files-agent-chip]")?.textContent).toContain("3changing now");
+    await keys(tree, "t");
+    expect(tree.paths()).toEqual(["docs", "docs/sessions.md", "services", "services/auth", "services/auth/token.go", "old.go"]);
+    expect(tree.cursor()).toBe("docs/sessions.md");
+    await keys(tree, "G", "Enter");
+    expect(document.querySelector("[data-files-notice]")?.textContent).toContain("The agent deleted old.go");
+    await keys(tree, "k", "t");
+    // Back to the whole tree on that row, its folders open.
+    expect(tree.cursor()).toBe("services/auth/token.go");
+    expect(tree.paths()).toContain("services/billing");
+    // Escape steps out of the trail before it closes anything.
+    await keys(tree, "t", "Escape");
+    expect(tree.paths()).toContain("go.mod");
+    expect(tree.onLeave).not.toHaveBeenCalled();
+    // The turn ends: the marks stay, still.
+    act(() => link.setAgent({ running: false, files: [{ path: "services/auth/token.go", change: "edited", turn: "last" }] }));
+    await settle();
+    expect(dot("services/auth/token.go").classList.contains("helix-files-agent-live")).toBe(false);
+    expect(dot("services/auth/token.go").classList.contains("hidden")).toBe(false);
+  });
+
+  it("follows a fake turn as it runs", async () => {
+    const { tree, link } = await withLink();
+    const turn = link.turn([[{ path: "go.mod", change: "edited" }], [{ path: "cmd/api/new.go", change: "created" }]], 40);
+    await waitFor(() => tree.list().querySelector('[data-path="go.mod"] .helix-files-agent-live') !== null);
+    await act(async () => await turn);
+    await settle();
+    expect(tree.source.exists("cmd/api/new.go")).toBe(true);
+    expect(tree.list().querySelector('[data-path="go.mod"] .helix-files-agent-live')).toBeNull();
+    expect(tree.list().querySelector('[data-path="cmd"] .helix-files-agent-dot:not(.hidden)')).not.toBeNull();
+  });
+
+  it("marks files not viewed and open comments, and adds them up on closed folders", async () => {
+    const { tree } = await withLink(
+      {},
+      {
+        changes: [
+          { path: "services/auth/token.go", status: "modified", viewed: false },
+          { path: "services/auth/session.go", status: "modified", viewed: true },
+          { path: "go.mod", status: "modified", viewed: false },
+        ],
+        comments: [
+          { path: "services/auth/token.go", state: "unsent" },
+          { path: "services/auth/token.go", state: "answered" },
+          { path: "services/auth/session.go", state: "done" },
+        ],
+      },
+    );
+    const services = tree.list().querySelector<HTMLElement>('[data-path="services"]')!;
+    expect(services.querySelector('[aria-label="1 not viewed"]')).not.toBeNull();
+    expect(services.querySelector('[title="2 open comments inside"]')?.textContent).toBe("2");
+    expect(tree.list().querySelector('[data-path="go.mod"] [aria-label="Not viewed"]')).not.toBeNull();
+    act(() => tree.handle.current!.reveal("services/auth/token.go"));
+    await settle();
+    const token = tree.list().querySelector<HTMLElement>('[data-path="services/auth/token.go"]')!;
+    expect(token.querySelector('[title="2 open comments"]')?.textContent).toBe("2");
+    expect(tree.list().querySelector('[data-path="services/auth/session.go"] [title*="open comment"]')).toBeNull();
+    // An open folder does not repeat what its rows show.
+    expect(tree.list().querySelector<HTMLElement>('[data-path="services"] .helix-files-unviewed')?.classList.contains("hidden")).toBe(true);
+  });
+
+  it("starts a new thread on a folder, from the row menu only, and only when bb can", async () => {
+    const { tree, link } = await withLink();
+    await keys(tree, "j", "ContextMenu");
+    const items = () => Array.from(document.querySelectorAll('[data-files-menu] [role="menuitem"]')).map((i) => i.firstChild?.textContent);
+    expect(items()).toContain("New thread here");
+    act(() => Array.from(document.querySelectorAll<HTMLElement>('[data-files-menu] [role="menuitem"]')).find((i) => i.textContent?.startsWith("New thread here"))!.click());
+    await settle();
+    expect(link.mentioned).toEqual([["new-thread", "cmd/"]]);
+    await keys(tree, "G", "ContextMenu");
+    expect(items()).not.toContain("New thread here");
+    expect(items().slice(0, 2)).toEqual(["Send to thread", "Ask about it"]);
+    const without = await withLink({ newThread: false });
+    await keys(without.tree, "j", "ContextMenu");
+    expect(items()).not.toContain("New thread here");
+  });
+
+  it("drags rows as mentions for the chat's drop place, with no text that would paste as plain paths", async () => {
+    const { tree } = await withLink();
+    const row = tree.list().querySelector<HTMLElement>('[data-path="docs"]')!;
+    expect(row.getAttribute("draggable")).toBe("true");
+    const data = new Map<string, string>();
+    const event = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { setData: (t: string, v: string) => data.set(t, v), effectAllowed: "" } });
+    act(() => void row.dispatchEvent(event));
+    expect(JSON.parse(data.get(DRAG_TYPE)!)).toEqual(["docs/"]);
+    expect(data.has("text/plain")).toBe(false);
+    expect(draggedRows.get()).toEqual(["docs/"]);
+    act(() => void row.dispatchEvent(new Event("dragend", { bubbles: true })));
+    expect(draggedRows.get()).toBeNull();
+  });
+
+  it("offers none of it without a thread", async () => {
+    const tree = await mount();
+    for (const k of ["s", "i", "t"]) expect((await tree.press(k)).defaultPrevented).toBe(false);
+    expect(document.querySelector("[data-files-ask]")).toBeNull();
+    expect(tree.list().querySelector('[data-path="docs"]')?.getAttribute("draggable")).toBeNull();
   });
 });
