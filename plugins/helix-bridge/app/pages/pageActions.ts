@@ -1,14 +1,14 @@
-// The editor page's actions, one name each, whatever asks for them: bb's
-// palette and Cmd keys (app.tsx) and Helix's `:bb-emit <name>` (bound to
-// whatever key the owner likes). The page registers what it can do; the
-// commands are available only while a page is on screen.
+// The editor page's actions, one name each, whatever asks for them: Helix's
+// `:bb-emit <name>` (the owner's keys, `space u` in the suggested set) and
+// bb's palette (app.tsx). The page registers what it can do; the commands are
+// available only while a page is on screen.
 import { useEffect, useRef } from "react";
 import { experimental_useAppPanel as useAppPanel, useRealtime } from "@get-bb/plugin-sdk/app";
 import type { ChangedFile } from "../../server";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { useHelixRpc, useThreadHelix } from "../data";
 import { setViewedOptimistic, useChanges } from "../rail/changesStore";
-import { editorFocus, railFocus, railHasFocus, railSheet, railTab, sidebarRailVisible, type RailTab } from "../rail/railStore";
+import { editorFocus, railFocus, railHasFocus, railSheet, railTab, type RailTab } from "../rail/railStore";
 import { sendComments } from "../review/SendToThread";
 
 /** The editor page's panel id (EditorPage's EDITOR_PANEL; repeated here to keep imports one-way). */
@@ -54,7 +54,8 @@ export function usePageActions(threadId: string | null) {
     if (!threadId) return;
     const showTab = (tab: RailTab) => {
       railTab.set(tab);
-      if (sidebarRailVisible(threadId)) window.setTimeout(() => railFocus.get(threadId)?.(), 0);
+      // Already showing: the new tab takes the keyboard. Else the sheet opens focused.
+      if (railSheet.get() === threadId) window.setTimeout(() => railFocus.get(threadId)?.(), 0);
       else railSheet.set(threadId);
     };
     /** Helix's file, relative to the workspace, as the review lists it. */
@@ -110,8 +111,9 @@ export function usePageActions(threadId: string | null) {
         case "rail.notes":
           return showTab(name === "rail.notes" ? "comments" : (name.slice(5) as RailTab));
         case "rail.toggle":
-          if (railHasFocus.get(threadId)?.()) {
-            if (railSheet.get() === threadId) railSheet.set(null);
+          // Showing: it goes away, wherever the keyboard is. Hidden: it comes back on its tab.
+          if (railSheet.get() === threadId) {
+            railSheet.set(null);
             return editorFocus.get(threadId)?.();
           }
           return showTab(railTab.get());

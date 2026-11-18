@@ -1,71 +1,24 @@
-// The editor page's rail, drawn in bb's own sidebar while the page is open
-// (navPanel `experimental_sidebar`), so the page body is all Helix. At the top
-// the thread and a way to other threads' editors; then three tabs: Files (the
-// yazi tree), Changes (the review) and Comments. bb gives it resizing and
-// collapse; Escape inside it goes back to Helix, not out of the page.
+// The editor page's rail: a sheet over the editor's left edge, there only
+// while it is used (EditorPage's RailSheet). At the top the thread and a way
+// to other threads' editors; then three tabs: Files (the yazi tree), Changes
+// (the review) and Comments. Choosing something, or Escape, closes it and
+// Helix has the keyboard again.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBbNavigate, useRealtime, useSettings } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ShortcutSheet, ThreadChip, useHotkeys } from "../../kit";
-import { useGhostty, useInstances } from "../data";
+import { usePortalScopeProps } from "@/lib/portal-scope";
+import { useGhostty, useHelixRpc, useInstances } from "../data";
+import { HELIX_KEYS } from "../keys";
+import { sendComments } from "../review/SendToThread";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { TreePane, type TreeHandle } from "../surface/TreePane";
 import { ChangesTab } from "./ChangesTab";
 import { useChanges } from "./changesStore";
 import { CommentsTab } from "./CommentsTab";
 import { useComments } from "./commentsStore";
-import { editorFocus, pendingTreeReveal, railFocus, railHasFocus, railSheet, railShown, railTab, sidebarRailVisible, useRailSheet, useRailTab, type RailTab } from "./railStore";
-
-/** The rail in bb's sidebar. Collapsed or a closed drawer, it draws nothing and the page offers it as a sheet. */
-export function EditorRail({ subPath }: { subPath: string }) {
-  const threadId = threadFromSubPath(subPath);
-  const probe = useRef<HTMLDivElement>(null);
-  const [onScreen, setOnScreen] = useState(true);
-  const [height, setHeight] = useState<number | null>(null);
-  const sheet = useRailSheet();
-  // bb's sidebar slot is a padded block in a scrolling column: the rail fills
-  // what the column shows, so the tree and the list get the whole height.
-  useEffect(() => {
-    const el = probe.current;
-    if (!el) return;
-    let column: HTMLElement | null = el.parentElement;
-    while (column && !/(auto|scroll)/u.test(getComputedStyle(column).overflowY)) column = column.parentElement;
-    if (!column) return;
-    const measure = () => {
-      const top = el.getBoundingClientRect().top - column!.getBoundingClientRect().top + column!.scrollTop;
-      let bottom = 0;
-      for (let p = el.parentElement; p && p !== column; p = p.parentElement) bottom += parseFloat(getComputedStyle(p).paddingBottom) || 0;
-      setHeight(Math.max(240, Math.floor(column!.clientHeight - top - bottom)));
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(column);
-    return () => observer.disconnect();
-  }, []);
-  useEffect(() => {
-    const el = probe.current;
-    if (!el || !threadId) return;
-    const observer = new IntersectionObserver(([entry]) => {
-      const visible = Boolean(entry?.isIntersecting);
-      setOnScreen(visible);
-      if (visible && !el.closest("[inert]")) railShown.set(threadId);
-      else if (railShown.get() === threadId) railShown.set(null);
-      if (visible && !el.closest("[inert]") && railSheet.get() === threadId) railSheet.set(null);
-    });
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-      if (railShown.get() === threadId) railShown.set(null);
-    };
-  }, [threadId]);
-  if (!threadId) return null;
-  return (
-    <div ref={probe} className="flex min-h-0 flex-col" style={{ height: height ?? "100%" }} data-helix-sidebar-rail={threadId}>
-      {onScreen && sheet !== threadId ? <Rail key={threadId} threadId={threadId} /> : null}
-    </div>
-  );
-}
+import { editorFocus, pendingTreeReveal, railFocus, railHasFocus, railTab, useRailTab, type RailTab } from "./railStore";
 
 export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void }) {
   const tab = useRailTab();
@@ -104,6 +57,20 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
     };
   }, [threadId]);
 
+  // :bb-files while the rail is showing (closed, the page opens it on Files):
+  // the tree on that file, with the keyboard.
+  useRealtime("files", (payload: unknown) => {
+    const request = payload as { threadId?: string; path?: string | null } | null;
+    if (request?.threadId !== threadId) return;
+    railTab.set("files");
+    if (treeHandle.current) {
+      if (request.path) treeHandle.current.reveal(request.path);
+      window.setTimeout(() => treeHandle.current?.focus(), 0);
+    } else pendingTreeReveal.set({ threadId, path: request.path ?? null, focus: true, at: Date.now() });
+  });
+
+  const rpc = useHelixRpc();
+  const scope = usePortalScopeProps() as unknown as Record<string, string>;
   const show = (next: RailTab) => {
     railTab.set(next);
     // The new tab takes the keyboard once it is drawn.
@@ -114,6 +81,7 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       { key: "1", handler: () => show("files"), description: "Files", group: "Rail" },
       { key: "2", handler: () => show("changes"), description: "Changes", group: "Rail" },
       { key: "3", handler: () => show("comments"), description: "Comments", group: "Rail" },
+      { key: "shift+c", handler: () => void sendComments(rpc, threadId, scope), description: "Send to thread", group: "Rail" },
     ],
     { scope: root },
   );
@@ -150,7 +118,7 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
       className="flex h-full min-h-0 flex-1 flex-col"
       data-helix-rail={threadId}
       onKeyDown={(event) => {
-        // bb's sidebar treats Escape as "Back to app"; in the rail it means back to Helix.
+        // Escape in the rail: it closes and Helix has the keyboard.
         if (event.key === "Escape" && !event.defaultPrevented) {
           event.preventDefault();
           event.stopPropagation();
@@ -170,7 +138,7 @@ export function Rail({ threadId, onLeave }: { threadId: string; onLeave?(): void
         {tab === "changes" ? <ChangesTab threadId={threadId} active root={root} onLeave={onLeave} /> : null}
         {tab === "comments" ? <CommentsTab threadId={threadId} onLeave={onLeave} /> : null}
       </div>
-      <ShortcutSheet trigger={false} />
+      <ShortcutSheet trigger={false} extra={HELIX_KEYS} />
     </div>
   );
 }
@@ -263,19 +231,6 @@ function FilesTab({ threadId, handle, onLeave }: { threadId: string; handle: { c
   const treeStaysOpen = values?.treeStaysOpen === true;
   // yazi quit (q): start it again, back in Helix.
   const [generation, setGeneration] = useState(0);
-
-  // :bb-files: show the tree on that file and give it the keyboard.
-  useRealtime("files", (payload: unknown) => {
-    const request = payload as { threadId?: string; path?: string | null } | null;
-    if (request?.threadId !== threadId) return;
-    // A rail in bb's closed drawer cannot take the keyboard: the page opens the sheet.
-    if (!sidebarRailVisible(threadId) && railSheet.get() !== threadId) return;
-    if (railTab.get() !== "files") railTab.set("files");
-    if (handle.current) {
-      if (request.path) handle.current.reveal(request.path);
-      handle.current.focus();
-    } else pendingTreeReveal.set({ threadId, path: request.path ?? null, focus: true, at: Date.now() });
-  });
 
   if (!ghostty.data) return null;
   return (

@@ -3,11 +3,12 @@
 // unsent comments lift and gather at this control, the packet travels to the
 // chat's composer (or, with the chat closed, to the thread at the top of the
 // rail), and the control settles on "Sent to <thread>". The same act runs from
-// ⌥⌘↩ and `:bb-emit review.send`.
+// `C` in the rail and `:bb-emit review.send` (`space u C` in Helix).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { prefersReducedMotion, ShortcutHint, ThreadChip } from "../../kit";
+import { u } from "../keys";
 import { startFlight } from "../../kit/handoff/flight";
 import { useHelixRpc, type Rpc } from "../data";
 import { refetchComments, useComments } from "../rail/commentsStore";
@@ -110,13 +111,13 @@ export function SendToThread({ threadId, className }: { threadId: string; classN
             setBusy(true);
             void sendComments(rpc, threadId, scope).finally(() => setBusy(false));
           }}
-          title="Send to thread (⌥⌘↩)"
+          title="Send to thread (space u C in Helix, C in the rail)"
           className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-opacity duration-[120ms] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
           data-helix-send-comments
         >
           Send to thread
           <span className="tabular-nums opacity-80">{unsent}</span>
-          <ShortcutHint combo="alt+mod+Enter" className="text-primary-foreground/80 [&_kbd]:border-primary-foreground/30 [&_kbd]:bg-transparent [&_kbd]:text-primary-foreground" />
+          <ShortcutHint combo={u("shift+c")} className="text-primary-foreground/80 [&_kbd]:border-primary-foreground/30 [&_kbd]:bg-transparent [&_kbd]:text-primary-foreground" />
         </button>
       ) : null}
     </span>

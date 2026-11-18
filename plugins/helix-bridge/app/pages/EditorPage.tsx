@@ -1,7 +1,8 @@
 // The editor page: `/plugins/helix-bridge/editor/<threadId>`. Helix fills the
-// page body; the rail (files, changes, comments) is bb's sidebar while the
-// page is open; the thread's conversation is the page's fixed Chat tab in
-// bb's side panel, so hiding the panel gives Helix the full width.
+// page body; the rail (files, changes, comments) is a sheet over its left
+// edge, there only while it is used; the thread's conversation is the page's
+// fixed Chat tab in bb's side panel, so hiding the panel gives Helix the full
+// width.
 import { useEffect, useState } from "react";
 import { experimental_useAppPanel as useAppPanel, experimental_usePanelTabs as usePanelTabs, ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
@@ -12,7 +13,7 @@ import { composerFocusRequest } from "../stores";
 import { useRealtime } from "@get-bb/plugin-sdk/app";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { Rail } from "../rail/Rail";
-import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, sidebarRailVisible, useRailSheet } from "../rail/railStore";
+import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, useRailSheet } from "../rail/railStore";
 import { EditorSurface } from "../surface/EditorSurface";
 import { ReviewBar } from "../review/ReviewBar";
 import { usePageActions } from "./pageActions";
@@ -38,7 +39,6 @@ export function EditorPage({ subPath }: { subPath: string }) {
     navigate.toThread(threadId);
   };
   // Keyed so switching threads mounts a fresh session.
-  // The rail (files, changes, comments) lives in bb's sidebar: the page is all Helix.
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <ReviewBar threadId={threadId} />
@@ -49,16 +49,17 @@ export function EditorPage({ subPath }: { subPath: string }) {
 }
 
 /**
- * The rail over the editor's left edge, when bb's sidebar is collapsed or a
- * closed drawer (compact windows). Escape, a chosen file or ⇧⌘H closes it.
+ * The rail over the editor's left edge: opened from Helix (`space e`, the
+ * `space u` keys) or the review bar, closed by Escape, a click outside, or
+ * choosing a file, a change or a comment.
  */
 function RailSheet({ threadId }: { threadId: string }) {
   const open = useRailSheet() === threadId;
   const portal = usePortalScopeProps();
-  // :bb-files with no rail on screen: the sheet, on Files.
+  // :bb-files with the rail closed: it opens on Files (open, the rail itself handles it).
   useRealtime("files", (payload: unknown) => {
     const request = payload as { threadId?: string; path?: string | null } | null;
-    if (request?.threadId !== threadId || sidebarRailVisible(threadId) || railSheet.get() === threadId) return;
+    if (request?.threadId !== threadId || railSheet.get() === threadId) return;
     railTab.set("files");
     pendingTreeReveal.set({ threadId, path: request.path ?? null, focus: true, at: Date.now() });
     railSheet.set(threadId);
@@ -68,6 +69,13 @@ function RailSheet({ threadId }: { threadId: string }) {
     const timers = [0, 250, 700].map((delay) => window.setTimeout(() => railFocus.get(threadId)?.(), delay));
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [open, threadId]);
+  // Leaving the page closes it: coming back, Helix has the whole page.
+  useEffect(
+    () => () => {
+      if (railSheet.get() === threadId) railSheet.set(null);
+    },
+    [threadId],
+  );
   if (!open) return null;
   const close = () => {
     railSheet.set(null);
@@ -218,5 +226,18 @@ function PickThread() {
 export function ChatTab({ subPath }: { subPath: string }) {
   const threadId = threadFromSubPath(subPath);
   if (!threadId) return <EmptyState icon="MessageSquare" title="No thread" description="Open the editor from a thread to chat beside it." />;
-  return <ThreadChat key={threadId} threadId={threadId} variant="compact" />;
+  // Escape in the chat goes back to Helix, once bb has had its own use of it
+  // (closing a menu, a dialog).
+  return (
+    <div
+      className="contents"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return;
+        if (document.querySelector("[role='listbox'], [role='menu'], [role='dialog']")) return;
+        editorFocus.get(threadId)?.();
+      }}
+    >
+      <ThreadChat key={threadId} threadId={threadId} variant="compact" />
+    </div>
+  );
 }

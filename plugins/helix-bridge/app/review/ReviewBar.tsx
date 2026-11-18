@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { useHelixRpc } from "../data";
 import { useChanges } from "../rail/changesStore";
 import { useComments } from "../rail/commentsStore";
-import { railFocus, railSheet, railTab, sidebarRailVisible, useRailShown, useRailTab } from "../rail/railStore";
+import { railFocus, railSheet, railTab, useRailShown, useRailTab } from "../rail/railStore";
 import { SendToThread, useRecentSend } from "./SendToThread";
 
 export function ReviewBar({ threadId }: { threadId: string }) {
@@ -32,7 +32,7 @@ export function ReviewBar({ threadId }: { threadId: string }) {
   const diffOn = inline ?? review?.inline ?? true;
   const showChanges = () => {
     railTab.set("changes");
-    if (!sidebarRailVisible(threadId)) railSheet.set(threadId);
+    railSheet.set(threadId);
     window.setTimeout(() => railFocus.get(threadId)?.(), 0);
   };
   return (

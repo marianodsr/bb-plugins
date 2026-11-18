@@ -13,7 +13,7 @@ import { HudMeter, type HudSnapshot } from "../terminal/hud";
 import { installKeyLayer, printable, type OptionAsAlt } from "../terminal/keys";
 import { createRenderer, type RendererDiagnostics, type SurfaceFont, type TerminalRenderer } from "../terminal/renderer";
 import { TerminalStream, exitOutcome } from "../terminal/stream";
-import { editorFocus as editorFocusers, railFocus, railHasFocus, railSheet, railTab, sidebarRailVisible } from "../rail/railStore";
+import { editorFocus as editorFocusers, railFocus, railHasFocus, railSheet, railTab } from "../rail/railStore";
 import { CommentBox, type CommentRequest } from "./CommentBox";
 import { TreePane, type TreeHandle } from "./TreePane";
 
@@ -471,7 +471,8 @@ function Session({
           const acted = () => (userActed = true);
           window.addEventListener("pointerdown", acted, { capture: true, once: true });
           const take = () => {
-            if (detached || userActed || element.contains(document.activeElement)) return;
+            // A page opened with the rail showing: the rail keeps the keyboard.
+            if (detached || userActed || element.contains(document.activeElement) || railSheet.get() === threadId) return;
             created.focus();
             claim();
           };
@@ -563,10 +564,10 @@ function Session({
     else editorFocus.current?.();
   };
 
-  // Cmd shortcuts (app.tsx): show or hide the tree, move focus between panes.
+  // Palette commands (app.tsx): show or hide the tree, move focus between panes.
   const controls = useRef({ toggleTree: () => {}, switchFocus: () => {} });
   controls.current = {
-    // The rail's Files tab (the tree); a sheet when bb's sidebar is hidden.
+    // The rail's Files tab (the tree), a sheet over the editor.
     toggleTree: () => {
       if (tree) {
         if (showTree) setTreeVisible(false);
@@ -582,11 +583,10 @@ function Session({
         return;
       }
       railTab.set("files");
-      if (sidebarRailVisible(threadId)) window.setTimeout(() => railFocus.get(threadId)?.(), 0);
-      else railSheet.set(threadId);
+      railSheet.set(threadId);
     },
-    // Between Helix and the rail (or its sheet); from anywhere else (the
-    // chat, bb's chrome) straight to Helix.
+    // Between Helix and the rail; from anywhere else (the chat, bb's chrome)
+    // straight to Helix.
     switchFocus: () => {
       const inEditor = Boolean(surface.current?.contains(document.activeElement));
       if (!tree && !inEditor && !railHasFocus.get(threadId)?.()) {
@@ -597,7 +597,7 @@ function Session({
       else if (!tree && railHasFocus.get(threadId)?.()) {
         if (railSheet.get() === threadId) railSheet.set(null);
         editorFocus.current?.();
-      } else if (!tree && sidebarRailVisible(threadId) && railFocus.get(threadId)?.()) return;
+      } else if (!tree && railSheet.get() === threadId) railFocus.get(threadId)?.();
       else if (!tree) railSheet.set(threadId);
       else editorFocus.current?.();
     },

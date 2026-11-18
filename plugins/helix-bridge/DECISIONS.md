@@ -504,3 +504,34 @@ conservatively. Newest last.
 88. **`window.__helixTimeline`** records each step of opening (session,
     renderer, attached, firstOutput, firstFrame, reused) for
     `spike/open-timing.mjs`.
+
+## Third pass: the owner's keys
+
+89. **No default shortcuts in bb.** The owner did not want Option-Cmd or
+    Shift-Cmd chords: every `defaultShortcut` is gone (this replaces the
+    Cmd keys of 60 and of the second pass). Inside Helix everything is
+    `space` and a key: `space e` for the files, `space u` and a letter for
+    the rest (`space u` is free in Helix's own map), as bindings in the
+    owner's config that run `:bb-emit <action>` or a `:bb-` command. The
+    hints (`app/keys.ts`: the Send button, the `?` sheet) name those keys.
+    The commands stay in the palette, and bb's Keyboard settings can bind
+    any of them. "Open the editor" has no key: Helix is not running yet, so
+    it cannot be a Helix key (the header button and the palette open it).
+90. **The rail is a sheet, not bb's sidebar** (replaces 60). The owner
+    expects the tree to close when a file is opened from it, and a plugin
+    cannot collapse bb's sidebar, so a rail there could never go away. The
+    `experimental_sidebar` registration is gone: bb's sidebar stays bb's,
+    Helix has the whole page, and the rail (same three tabs) is the sheet
+    over the editor's left edge that was the fallback for a collapsed
+    sidebar. A key opens it with the keyboard; choosing a file, a change or
+    a comment, Escape, or a click outside closes it. It unmounts when
+    closed, so none of its keys act unseen; the yazi session stays and is
+    attached again on the next open. Places that open the page for a review
+    (the header's "N to view", the context card row, "Helix: review
+    changes") open it with the rail showing, and the editor's opening
+    focus leaves the keyboard there.
+91. **Escape in the page's chat goes back to Helix**, after bb has had its
+    own use of the key (it is ignored when bb prevented it or a menu or
+    dialog is open). With `space u t` to get there, the chat needs no chord.
+    In the rail, `C` sends the comments (the same letter as `space u C`).
+

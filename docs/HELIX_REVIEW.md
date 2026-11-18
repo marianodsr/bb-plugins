@@ -124,16 +124,16 @@ getting to a file live in one place and one key switches between them.
 
 ## Keys
 
-Cmd belongs to bb, so review actions that must work from inside Helix are on
-Cmd and work in any Helix mode: next and previous changed file, mark viewed,
-focus the rail, send comments. Check each against bb's own bindings and
-choose free ones; show them in the shortcut sheet.
-
-For people who would rather stay in Helix's own keys, the fork gains one
-generic command, `:bb-emit <action>`, that hands an action name to the
-plugin (`review.next-file`, `review.prev-file`, `review.viewed`,
-`review.send`, `rail.changes`, `rail.notes`, `chat.focus`). They bind it
-like any other command; the README lists the actions.
+Superseded on 2026-11-17 (plugin DECISIONS 89 to 91): the owner did not want
+Option-Cmd or Shift-Cmd chords, so the plugin binds none of bb's shortcuts.
+Every action is `space` and a key inside Helix (`space e` for the files,
+`space u` and a letter for the rest), bound in the owner's Helix config to
+the fork's generic command `:bb-emit <action>` (`review.next-file`,
+`review.prev-file`, `review.viewed`, `review.send`, `rail.files`,
+`rail.changes`, `rail.comments`, `rail.toggle`, `chat.focus`). The rail is
+no longer in bb's sidebar: it is a sheet over the editor that a key opens
+and that closes when something is chosen from it. The plugin's README has
+the table.
 
 ## What the fork adds (small)
 

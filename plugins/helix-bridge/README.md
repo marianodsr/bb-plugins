@@ -42,12 +42,15 @@ covers them).
 
 ## The editor page
 
-Helix fills the page. bb's sidebar becomes the editor's rail while the page
-is open: the thread (and the other threads that have an editor) at the top,
-then three tabs:
+Helix fills the page, and bb's sidebar stays bb's. The rail is a sheet over
+the editor's left edge that is there only while you use it: a key in Helix
+opens it with the keyboard, and choosing a file, a change or a comment (or
+Escape, or a click outside) closes it and puts you back in Helix. It has the
+thread (and the other threads that have an editor) at the top, then three
+tabs:
 
-- **Files**: the yazi tree (`space e` in the owner's keys, or ⇧⌘Y). Enter
-  opens a file and hands the keyboard to Helix; Escape goes back to Helix.
+- **Files**: the yazi tree (`space e`). Enter opens a file, closes the rail
+  and hands the keyboard to Helix (the setting `treeStaysOpen` keeps it).
 - **Changes**: the review. Opening it starts one in Helix (the branch when it
   has commits of its own, else the uncommitted changes); the scope control
   switches between Uncommitted, Branch, PR (when the thread has one) and
@@ -65,14 +68,14 @@ then three tabs:
   drops, `r` replies, `a` acknowledges the agent's resolution, `o` reopens.
   The tab's count is what needs you (else what waits to be sent).
 
-**Writing a comment.** Select lines in Helix and run `:bb-comment` (bind it,
-for example `C = ":bb-comment"` under `[keys.select]`): inside bb a box opens
+**Writing a comment.** Select lines in Helix and press `space u c`
+(`:bb-comment`): inside bb a box opens
 beside the selection with the quoted lines, a multi-line field with voice
 input and the severity. Enter keeps it, ⌘Enter keeps it and sends, Escape
 cancels; Helix gets the keyboard back in the mode it was in. Outside bb,
 Helix's own one-line prompt opens as before.
 
-**Send to thread** (the bar, the Comments tab, ⌥⌘↩) hands every comment not
+**Send to thread** (the bar, `space u C` in Helix, `C` in the rail) hands every comment not
 sent yet to the thread, naming the review; they gather and fly to the chat's
 composer (to the thread at the top of the rail when the chat is closed).
 
@@ -82,23 +85,37 @@ request, the inline diff switch, Send to thread and End review.
 
 ### Keys
 
-| Key | Does |
-|---|---|
-| ⇧⌘H | Between Helix and the rail |
-| ⇧⌘Y | The files (the tree) |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | The rail's Files, Changes, Comments |
-| ⌥⌘] / ⌥⌘[ | Next / previous changed file, in Helix at its first change |
-| ⌥⌘V | Mark Helix's file viewed and go to the next one not viewed |
-| ⌥⌘↩ | Send to thread |
-| ⌥⌘C | The chat (opens the panel, focuses its composer) |
-| `?` in the rail | Every key of the tab |
+Everything is `space` and a key, pressed in Helix. The plugin binds none of
+bb's shortcuts (no Cmd, Option or Control chords): the keys below are Helix
+bindings in your own `config.toml`, each running `:bb-emit <action>` or a
+`:bb-` command. The fork's `bb-bridge/config/keys-bb.example.toml` has the
+whole set to copy; the hints in the plugin name these keys.
 
-For Helix's own keys, `:bb-emit <action>` runs the same things; bind it like
-any command (`"C-n" = ":bb-emit review.next-file"`). Actions:
-`review.next-file`, `review.prev-file`, `review.viewed`, `review.send`,
-`rail.files`, `rail.changes`, `rail.comments`, `rail.toggle`, `chat.focus`.
-When bb's sidebar is collapsed, or on a compact window, the rail opens as a
-sheet over the editor.
+| In Helix | Does | Runs |
+|---|---|---|
+| `space e` | The rail on Files, on Helix's file | `:bb-files` |
+| `space u r` | The rail on Changes (starts the review) | `:bb-emit rail.changes` |
+| `space u m` | The rail on Comments | `:bb-emit rail.comments` |
+| `space u u` | Show or hide the rail, on the tab it was on | `:bb-emit rail.toggle` |
+| `space u f` / `space u F` | Next / previous changed file, at its first change | `:bb-emit review.next-file`, `review.prev-file` |
+| `space u v` | Mark Helix's file viewed and go to the next one not viewed | `:bb-emit review.viewed` |
+| `space u d` | Inline diff on or off | `:bb-diff` |
+| `space u c` | Comment on the selection | `:bb-comment` |
+| `space u C` | Send to thread | `:bb-emit review.send` |
+| `space u s` | Selection to the chat's composer | `:bb-send` |
+| `space u t` | The chat (opens the panel, focuses its composer) | `:bb-emit chat.focus` |
+
+| Outside Helix | Does |
+|---|---|
+| Escape, in the rail or the chat | Back to Helix (the rail closes) |
+| `1` / `2` / `3`, in the rail | Files, Changes, Comments |
+| `C`, in the rail | Send to thread |
+| `?`, in the rail | Every key of the tab, and the Helix keys above |
+
+Every action is also a palette command ("Helix: …"), and bb's Keyboard
+settings can bind any of them, including "Helix: open the editor for this
+thread", which has no key of its own (the Helix button in the thread's
+header opens it).
 
 The first time the page opens at a window size, the chat panel closes if
 leaving it open would give Helix fewer than 80 columns; after that the
@@ -142,20 +159,28 @@ looked up when pressed. The full suggested set is
 
 ```toml
 [keys.normal.space]
-e = "@:bb-files<ret>"          # the file tree beside the editor
+e = "@:bb-files<ret>"                 # the file tree
 
-[keys.normal.space.t]
-s = "@:bb-send<ret>"           # selection to the thread's composer
-c = "@:bb-comment<ret>"        # comment on the selection
-C = "@:bb-comments-send<ret>"  # send the pending comments
-n = "@:bb-next<ret>"           # next place (agent changes, tour, review)
+[keys.normal.space.u]
+c = "@:bb-comment<ret>"                 # comment on the selection
+s = "@:bb-send<ret>"                    # selection to the thread's composer
+C = "@:bb-emit review.send<ret>"        # send the comments that are waiting
+f = "@:bb-emit review.next-file<ret>"   # next changed file
+F = "@:bb-emit review.prev-file<ret>"
+v = "@:bb-emit review.viewed<ret>"      # viewed, and on to the next
+d = "@:bb-diff<ret>"                    # inline diff on or off
+u = "@:bb-emit rail.toggle<ret>"        # the rail, on the tab it was on
+r = "@:bb-emit rail.changes<ret>"
+m = "@:bb-emit rail.comments<ret>"
+t = "@:bb-emit chat.focus<ret>"         # the chat (Escape there comes back)
+n = "@:bb-next<ret>"                    # next place (agent changes, tour, review)
 p = "@:bb-prev<ret>"
-g = "@:bb-go<ret>"             # a jump that waited while you typed
+g = "@:bb-go<ret>"                      # a jump that waited while you typed
 
 [keys.select.space]
 e = "@:bb-files<ret>"
 
-[keys.select.space.t]
+[keys.select.space.u]
 s = "@:bb-send<ret>"
 c = "@:bb-comment<ret>"
 ```
@@ -163,21 +188,17 @@ c = "@:bb-comment<ret>"
 ## The file tree
 
 With [yazi](https://yazi-rs.github.io) installed (`brew install yazi`; `bb hx
-doctor` checks), the editor page has a file tree beside Helix. It works as a
-picker: choose a file (Enter, or your opener key) and it opens in Helix and
-the tree closes, with you in the editor (setting `treeStaysOpen` keeps it
-showing). Escape or `q` closes it too. While it shows, it follows the file
-you are in, unless you are moving in the tree right then.
+doctor` checks), the rail's Files tab is a file tree. It works as a picker:
+choose a file (Enter, or your opener key) and it opens in Helix and the rail
+closes, with you in the editor (setting `treeStaysOpen` keeps it showing).
+Escape or `q` closes it too.
 
 | Keys | |
 |---|---|
 | `space e` in Helix (`:bb-files`) | open the tree on the file you are in, focused |
-| ⌘⇧Y | show or hide the tree (also the folder button in the page header) |
-| ⌘⇧H | move focus between the tree and the editor |
 | Escape or `q` in the tree | close the tree, back to Helix |
 
-Drag the divider to resize; width and visibility are remembered in this
-browser (the tree starts hidden on narrow windows). Your own yazi
+Your own yazi
 configuration applies (keymap, theme, plugins, `yazi.toml`) and is never
 written: the tree runs with a generated configuration directory in the
 plugin's data that links yours and adds one column and the "Open in Helix"

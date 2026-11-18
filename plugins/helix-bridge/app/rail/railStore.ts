@@ -1,7 +1,6 @@
-// What the editor page and its rail (in bb's sidebar) share. They are two
-// React trees bb mounts separately, so they meet here: the rail asks the
-// editor for focus, the editor asks the rail to show a tab, and both read
-// which tab is showing. Nothing here re-renders on a cursor move.
+// What the editor page and its rail share: the rail asks the editor for
+// focus, the editor asks the rail to show a tab, and both read which tab is
+// showing. Nothing here re-renders on a cursor move.
 import { useSyncExternalStore } from "react";
 
 export type RailTab = "files" | "changes" | "comments";
@@ -58,29 +57,15 @@ export const railFocus = new Map<string, () => boolean>();
 /** Per thread: the rail holds focus now. */
 export const railHasFocus = new Map<string, () => boolean>();
 
-/** The rail as a sheet over the editor, for when bb's sidebar is collapsed or a closed drawer. */
+/** The thread whose rail is showing: a sheet over the editor's left edge, there only while it is used. */
 export const railSheet = store<string | null>(null);
 export function useRailSheet(): string | null {
   return useSyncExternalStore(railSheet.subscribe, railSheet.get);
 }
 
-/**
- * The rail in bb's sidebar can be used now: drawn, in the window, and not in
- * bb's closed drawer (compact windows keep it mounted there, inert).
- */
-export function sidebarRailVisible(threadId: string): boolean {
-  const el = document.querySelector<HTMLElement>(`[data-helix-sidebar-rail="${CSS.escape(threadId)}"]`);
-  if (!el || el.closest("[inert]")) return false;
-  const r = el.getBoundingClientRect();
-  return r.width > 0 && r.right > 0 && r.left < window.innerWidth;
-}
-
-/** The thread whose sidebar rail is on screen now (for the review bar), or null. */
-export const railShown = store<string | null>(null);
+/** The thread's rail is on screen now (for the review bar). */
 export function useRailShown(threadId: string): boolean {
-  const shown = useSyncExternalStore(railShown.subscribe, railShown.get);
-  const sheet = useRailSheet();
-  return shown === threadId || sheet === threadId;
+  return useRailSheet() === threadId;
 }
 
 /** A tree reveal asked for before the tree was on screen (`:bb-files`). */

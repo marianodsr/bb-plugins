@@ -16,7 +16,7 @@ import { arrivals, commandRequest, composerFocusRequest } from "../stores";
 import { EDITOR_PANEL, threadFromSubPath } from "../pages/EditorPage";
 import { visibleSurfaces } from "../surface/EditorSurface";
 import { BindDialog } from "../thread/ThreadParts";
-import { railFocus, railTab } from "../rail/railStore";
+import { railFocus, railSheet, railTab } from "../rail/railStore";
 
 export { arrivals, commandRequest, composerFocusRequest, useArrival } from "../stores";
 
@@ -35,8 +35,11 @@ export function HelixOverlay() {
   useEffect(() => {
     if (!request || request.kind === "bind") return;
     commandRequest.set(null);
-    // "Review changes" is the editor page on its Changes tab: opening it starts the review.
-    if (request.kind === "review") railTab.set("changes");
+    // "Review changes" is the editor page with the rail on Changes: opening it starts the review.
+    if (request.kind === "review") {
+      railTab.set("changes");
+      railSheet.set(request.threadId);
+    }
     navigate.toPluginPanel(EDITOR_PANEL, { subPath: request.threadId });
     if (request.kind === "review") for (const delay of [0, 300, 900]) window.setTimeout(() => railFocus.get(request.threadId)?.(), delay);
   }, [request, navigate]);

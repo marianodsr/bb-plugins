@@ -14,7 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Icon } from "@/components/ui/icon";
 import { EmptyState, StatusDot } from "../../kit";
 import { useHelixRpc, useInstances, useReviewSummaries, useThreadHelix, whereLabel } from "../data";
-import { railTab } from "../rail/railStore";
+import { railSheet, railTab } from "../rail/railStore";
 import { EDITOR_PANEL } from "../pages/EditorPage";
 import { composerFocusRequest } from "../stores";
 import { EditorSurface } from "../surface/EditorSurface";
@@ -87,6 +87,7 @@ export function HelixStatusRow({ threadId }: { threadId: string }) {
           title={`${summary.title}. Open the editor on its changes.`}
           onClick={() => {
             railTab.set(summary.needsYou > 0 ? "comments" : "changes");
+            railSheet.set(threadId);
             navigate.toPluginPanel(EDITOR_PANEL, { subPath: threadId });
           }}
         />
