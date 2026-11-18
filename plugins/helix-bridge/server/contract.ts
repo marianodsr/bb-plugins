@@ -289,6 +289,16 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: id, path: z.string().min(1).max(4096) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
   },
+  filesAsk: {
+    experimental_description: "The file tree: send the thread's agent one message about entries of the workspace (ask), or ask it to write a file that does not exist yet (write). Queued behind a running turn.",
+    input: z.object({ threadId: id, kind: z.enum(["ask", "write"]), paths: z.array(z.string().min(1).max(4096)).min(1).max(50), text: z.string().max(4000) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+  },
+  agentFiles: {
+    experimental_description: "The file tree: the files the agent changed in the thread's running turn and in its last finished one, from what the plugin saw while following them.",
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ running: z.boolean(), files: z.array(z.object({ path: z.string(), change: z.enum(["edited", "created", "deleted"]), turn: z.enum(["running", "last"]) })) }),
+  },
   editorTerminal: {
     experimental_description: "The thread's Helix terminal session, started if needed.",
     input: z.object({ threadId: id }).strict(),

@@ -209,6 +209,12 @@ export const hostContract = defineRpcContract({
     input: z.object({ root: workspaceRootSchema, dirs: filesListInputSchema }).strict(),
     output: z.record(z.string(), dirListingSchema),
   },
+  filesCheck: {
+    experimental_description: "The file tree: check paths for a message to the thread's agent (read: they exist, with their kind; write: a new file may take it). Changes nothing.",
+    experimental_retryable: true,
+    input: z.object({ root: workspaceRootSchema, paths: z.array(relativePathSchema).min(1).max(50), intent: z.enum(["read", "write"]) }).strict(),
+    output: z.object({ kinds: z.array(z.enum(["file", "dir"])), error: z.string().nullable() }),
+  },
   filesOp: {
     experimental_description: "The file tree: create, rename, copy, move, trash or delete inside the workspace, never replacing anything.",
     input: z.object({ root: workspaceRootSchema, op: fileOpSchema }).strict(),

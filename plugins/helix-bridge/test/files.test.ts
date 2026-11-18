@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "v
 import type { z } from "zod";
 import type { DirListing, FileOp, FileOpResult } from "../app/files/types";
 import { LIST_LIMIT, applyOp, listDirs } from "../host/files";
-import { Files, type FilesDeps } from "../server/files";
+import { AGENT_FILES_INTERVAL_MS, AgentTrail, itemChanges } from "../server/agent-files";
+import { Files, agentMessage, type FilesDeps } from "../server/files";
 import type { dirListingSchema, fileOpResultSchema, fileOpSchema } from "../shared/host-contract";
 
 let root: string;
@@ -404,5 +405,97 @@ describe("the server's change signal", () => {
     f.anything("thr_2");
     expect(published.at(-1)).toEqual({ threadId: "thr_2", dirs: null });
     f.dispose();
+  });
+});
+
+describe("the agent's trail", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("reads add, update, delete and moves from fileChange items, and a new or removed file from the diff's header", () => {
+    const item = (changes: Record<string, unknown>[], status = "completed") => ({ type: "fileChange", status, changes });
+    expect(itemChanges(item([{ path: "a.go", kind: "add" }, { path: "/w/b.go", kind: "update" }, { path: "c.go", kind: "delete" }]), "/w")).toEqual([
+      { path: "/w/a.go", change: "created" },
+      { path: "/w/b.go", change: "edited" },
+      { path: "/w/c.go", change: "deleted" },
+    ]);
+    expect(itemChanges(item([{ path: "a.go", kind: "update", movePath: "b.go" }]), "/w")).toEqual([
+      { path: "/w/a.go", change: "deleted" },
+      { path: "/w/b.go", change: "created" },
+    ]);
+    expect(itemChanges(item([{ path: "n.go", kind: "update", diff: "--- /dev/null\n+++ b/n.go\n+x\n" }, { path: "g.go", kind: "update", diff: "--- a/g.go\n+++ /dev/null\n-x\n" }]), "/w")).toEqual([
+      { path: "/w/n.go", change: "created" },
+      { path: "/w/g.go", change: "deleted" },
+    ]);
+    expect(itemChanges(item([{ path: "a.go", kind: "update" }], "failed"), "/w")).toEqual([]);
+    expect(itemChanges({ type: "commandExecution" }, "/w")).toEqual([]);
+  });
+
+  it("folds later changes of a file in one turn into one", async () => {
+    const trail = new AgentTrail({ root: async () => "/w", publish: () => {} });
+    trail.turnStarted("thr_1");
+    await trail.note("thr_1", [
+      { path: "/w/new.go", change: "created" },
+      { path: "/w/new.go", change: "edited" },
+      { path: "/w/tmp.go", change: "created" },
+      { path: "/w/tmp.go", change: "deleted" },
+      { path: "/w/old.go", change: "edited" },
+      { path: "/w/old.go", change: "deleted" },
+      { path: "/w/back.go", change: "deleted" },
+      { path: "/w/back.go", change: "created" },
+      { path: "/private/w/linked.go", change: "edited" },
+      { path: "/elsewhere/x.go", change: "edited" },
+    ]);
+    expect(trail.files("thr_1")).toEqual({
+      running: true,
+      files: [
+        { path: "new.go", change: "created", turn: "running" },
+        { path: "old.go", change: "deleted", turn: "running" },
+        { path: "back.go", change: "edited", turn: "running" },
+        { path: "linked.go", change: "edited", turn: "running" },
+      ],
+    });
+    // Nothing is noted outside a turn.
+    await trail.note("thr_2", [{ path: "/w/a.go", change: "edited" }]);
+    expect(trail.files("thr_2")).toEqual({ running: false, files: [] });
+    trail.dispose();
+  });
+
+  it("says it changed at most four times a second per thread", async () => {
+    vi.useFakeTimers({ now: 50_000 });
+    const published: string[] = [];
+    const trail = new AgentTrail({ root: async () => "/w", publish: ({ threadId }) => published.push(threadId) });
+    trail.turnStarted("thr_1");
+    for (let i = 0; i < 20; i += 1) await trail.note("thr_1", [{ path: `/w/f${i}.go`, change: "edited" }]);
+    trail.turnStarted("thr_2");
+    expect(published).toEqual(["thr_1", "thr_2"]);
+    vi.advanceTimersByTime(AGENT_FILES_INTERVAL_MS - 1);
+    expect(published).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(published).toEqual(["thr_1", "thr_2", "thr_1"]);
+    trail.turnEnded("thr_1");
+    expect(published).toHaveLength(3);
+    vi.advanceTimersByTime(AGENT_FILES_INTERVAL_MS);
+    expect(published).toEqual(["thr_1", "thr_2", "thr_1", "thr_1"]);
+    // The same change again is no change.
+    trail.turnStarted("thr_3");
+    await trail.note("thr_3", [{ path: "/w/a.go", change: "edited" }]);
+    vi.advanceTimersByTime(1000);
+    const before = published.length;
+    await trail.note("thr_3", [{ path: "/w/a.go", change: "edited" }]);
+    vi.advanceTimersByTime(1000);
+    expect(published).toHaveLength(before);
+    trail.dispose();
+  });
+});
+
+describe("messages to the agent", () => {
+  it("names the entries as mentions over @path and adds only the user's words", () => {
+    const asked = agentMessage("ask", [{ path: "a.go", kind: "file" }, { path: "pkg", kind: "dir" }], "who uses these?");
+    expect(asked.text).toBe("@a.go @pkg\n\nwho uses these?");
+    expect(asked.mentions.map((m) => asked.text.slice(m.start, m.end))).toEqual(["@a.go", "@pkg"]);
+    expect(asked.mentions.map((m) => m.resource.entryKind)).toEqual(["file", "directory"]);
+    const write = agentMessage("write", [{ path: "ünï/cödé.go", kind: "file" }], "a helper");
+    expect(write.text).toBe("Create @ünï/cödé.go.\n\na helper");
+    expect(write.text.slice(write.mentions[0]!.start, write.mentions[0]!.end)).toBe("@ünï/cödé.go");
   });
 });
