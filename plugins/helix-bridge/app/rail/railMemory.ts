@@ -1,6 +1,7 @@
 // What each thread's rail was showing when it closed, so opening it again
 // lands where it was: the row under the cursor in Changes and in Comments and
-// each list's filters. (The tab is railStore's; yazi keeps its own place.) The
+// each list's filters, and the file tree's open folders, cursor and what waits
+// to be pasted. (The tab is railStore's.) The
 // rail unmounts when it closes, and the page when you leave it, so this lives
 // here. It is kept for the life of the window, not across a reload.
 import { useMemo, useRef, useState } from "react";
@@ -8,6 +9,16 @@ import { useMemo, useRef, useState } from "react";
 export interface RailMemory {
   changes: { row: string | null; unviewedOnly: boolean; collapsed: Set<string> | null };
   comments: { row: string | null; showDone: boolean };
+  /** The file tree (app/files): kept by path, so the same row comes back even if the folders changed. */
+  files: {
+    open: Set<string>;
+    cursor: string | null;
+    showHidden: boolean;
+    /** Where the list was scrolled; null centres the cursor. */
+    scroll: number | null;
+    /** Copied or cut, waiting for a paste. */
+    clip: { mode: "copy" | "move"; paths: string[] } | null;
+  };
 }
 
 const memories = new Map<string, RailMemory>();
@@ -15,7 +26,7 @@ const memories = new Map<string, RailMemory>();
 export function railMemory(threadId: string): RailMemory {
   let memory = memories.get(threadId);
   if (!memory) {
-    memory = { changes: { row: null, unviewedOnly: false, collapsed: null }, comments: { row: null, showDone: false } };
+    memory = { changes: { row: null, unviewedOnly: false, collapsed: null }, comments: { row: null, showDone: false }, files: { open: new Set(), cursor: null, showHidden: false, scroll: null, clip: null } };
     memories.set(threadId, memory);
   }
   return memory;

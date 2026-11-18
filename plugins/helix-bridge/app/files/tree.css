@@ -1,0 +1,105 @@
+/* The file tree's motion: only where it tells something (DESIGN.md). */
+
+/* A new row arrives (a draft, something created or pasted): `enter`. */
+@keyframes helix-files-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.helix-files-arrive {
+  animation: helix-files-arrive 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The folder something was pasted into, marked once. */
+@keyframes helix-files-mark {
+  from {
+    background-color: color-mix(in oklab, var(--primary) 22%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.helix-files-mark {
+  animation: helix-files-mark 700ms ease-out;
+}
+
+/* Selection is the host's file accent, so it never reads as the cursor (which is grey, with a bar). */
+.helix-files-selected {
+  background-color: color-mix(in oklab, var(--file-accent, var(--primary)) 15%, transparent);
+}
+.helix-files-selected.helix-files-cursor {
+  background-color: color-mix(in oklab, var(--file-accent, var(--primary)) 26%, transparent);
+}
+/* The search's matched letters. */
+.helix-files-match {
+  color: var(--file-accent, var(--foreground));
+  background-color: color-mix(in oklab, var(--file-accent, var(--primary)) 12%, transparent);
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+/* A row's own marks are pseudo-elements, so a row is few elements (see TreeRows' BLOCK). */
+.helix-files-row::after {
+  /* Depth: a hairline under each open folder's chevron. */
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 6px;
+  width: calc(var(--helix-files-depth, 0) * 14px);
+  pointer-events: none;
+  background-image: repeating-linear-gradient(to right, transparent 0 7px, color-mix(in oklab, var(--border) 85%, transparent) 7px 8px, transparent 8px 14px);
+}
+.helix-files-row::before {
+  /* The cursor's bar: plain while the list has the keyboard, quieter without it. */
+  content: "";
+  position: absolute;
+  inset-block: 4px;
+  left: 0;
+  width: 2px;
+  border-radius: 9999px;
+  background-color: transparent;
+}
+.helix-files-row[data-cursor-row]::before {
+  background-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
+}
+.helix-files-row[data-cursor-row][data-focused]::before {
+  background-color: var(--foreground);
+}
+/* A folder's chevron, drawn by two borders. */
+.helix-files-chevron {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateX(-1px) rotate(-45deg);
+}
+.helix-files-chevron[data-open] {
+  transform: translateY(-1px) rotate(45deg);
+}
+.helix-files-chevron[data-turn] {
+  transition: transform 120ms ease-out;
+}
+/* A folder that holds changes of the review. */
+.helix-files-changed::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .helix-files-arrive,
+  .helix-files-mark {
+    animation: none;
+  }
+  .helix-files-chevron[data-turn] {
+    transition: none;
+  }
+}

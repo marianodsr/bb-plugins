@@ -13,6 +13,7 @@ import { composerFocusRequest } from "../stores";
 import { useRealtime } from "@get-bb/plugin-sdk/app";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { CommentsPreview, PREVIEW_PATH } from "../rail/CommentsPreview";
+import { FILES_PREVIEW_PATH, FilesPreview } from "../files/FilesPreview";
 import { Rail } from "../rail/Rail";
 import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, useRailSheet } from "../rail/railStore";
 import { EditorSurface } from "../surface/EditorSurface";
@@ -34,6 +35,7 @@ export function EditorPage({ subPath }: { subPath: string }) {
   useEditorWidth(threadId);
   usePageActions(threadId);
   if (subPath === PREVIEW_PATH) return <CommentsPreview />;
+  if (subPath === FILES_PREVIEW_PATH) return <FilesPreview />;
   if (!threadId) return <PickThread />;
   // Helix closed: back to the thread, with its composer focused.
   const onClosed = () => {
