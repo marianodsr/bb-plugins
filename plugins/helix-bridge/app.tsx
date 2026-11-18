@@ -12,6 +12,7 @@ import {
   experimental_THREAD_INFO_ROW_GROUPS as ROW_GROUPS,
 } from "@get-bb/plugin-sdk/app";
 import { FromHelixReceipt, PositionAction, PositionChip } from "./app/composer/ComposerParts";
+import { FilesDropBanner, NewThreadMentions } from "./app/files/threadLink";
 import { HelixOverlay } from "./app/overlay/HelixOverlay";
 import { commandRequest } from "./app/stores";
 import { pageActions } from "./app/pages/pageActions";
@@ -96,8 +97,12 @@ export default definePluginApp((app) => {
     banners: [
       { id: "position", component: PositionChip, chrome: "bare" },
       { id: "from-helix", component: FromHelixReceipt, chrome: "bare" },
+      // Rows dragged from the file tree drop here as mentions.
+      { id: "files-drop", component: FilesDropBanner, chrome: "bare" },
     ],
   });
+  // "New thread here" on a folder of the file tree: its mention, once bb's new-thread composer is up.
+  app.composer.customize({ id: "helix-files", scopes: ["new-thread"], actions: [{ id: "files-mention", component: NewThreadMentions }] });
 
   app.slots.experimental_appOverlay({ id: "helix", component: HelixOverlay });
 

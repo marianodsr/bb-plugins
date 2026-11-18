@@ -3,7 +3,7 @@
 // edge, there only while it is used; the thread's conversation is the page's
 // fixed Chat tab in bb's side panel, so hiding the panel gives Helix the full
 // width.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { experimental_useAppPanel as useAppPanel, experimental_usePanelTabs as usePanelTabs, ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -14,7 +14,9 @@ import { useRealtime } from "@get-bb/plugin-sdk/app";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { CommentsPreview, PREVIEW_PATH } from "../rail/CommentsPreview";
 import { FILES_PREVIEW_PATH, FilesPreview } from "../files/FilesPreview";
-import { Rail } from "../rail/Rail";
+import type { FileTreeHandle } from "../files/FileTree";
+import { listTimings } from "../files/rpcSource";
+import { FilesTab, Rail } from "../rail/Rail";
 import { editorFocus, pendingTreeReveal, railFocus, railSheet, railTab, useRailSheet } from "../rail/railStore";
 import { EditorSurface } from "../surface/EditorSurface";
 import { ReviewBar } from "../review/ReviewBar";
@@ -36,6 +38,7 @@ export function EditorPage({ subPath }: { subPath: string }) {
   usePageActions(threadId);
   if (subPath === PREVIEW_PATH) return <CommentsPreview />;
   if (subPath === FILES_PREVIEW_PATH) return <FilesPreview />;
+  if (subPath.startsWith(`${FILES_PREVIEW_PATH}/`)) return <LiveFiles threadId={threadFromSubPath(subPath.slice(FILES_PREVIEW_PATH.length + 1))} />;
   if (!threadId) return <PickThread />;
   // Helix closed: back to the thread, with its composer focused.
   const onClosed = () => {
@@ -48,6 +51,32 @@ export function EditorPage({ subPath }: { subPath: string }) {
       <ReviewBar threadId={threadId} />
       <EditorSurface key={threadId} threadId={threadId} active autoFocus onClosed={onClosed} />
       <RailSheet threadId={threadId} />
+    </div>
+  );
+}
+
+/**
+ * A real thread's file tree with no Helix beside it, at the rail's width:
+ * `/plugins/helix-bridge/editor/~files/<threadId>`. For looking at the tree on
+ * a real workspace and timing its listings without attaching to anyone's
+ * editor; nothing links to it.
+ */
+function LiveFiles({ threadId }: { threadId: string | null }) {
+  const handle = useRef<FileTreeHandle | null>(null);
+  const [timings, setTimings] = useState("");
+  useEffect(() => {
+    const timer = window.setInterval(() => setTimings(listTimings.map((t) => `${t.ms.toFixed(0)} ms (${t.dirs})`).join(", ")), 500);
+    return () => window.clearInterval(timer);
+  }, []);
+  if (!threadId) return <PickThread />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center gap-2 bg-muted/40 p-6">
+      <div className="flex min-h-0 w-[22rem] flex-1 flex-col border-r border-border/60 bg-background pt-2 shadow-lg">
+        <FilesTab threadId={threadId} handle={handle} />
+      </div>
+      <p className="w-[22rem] text-xs text-muted-foreground" data-helix-list-timings>
+        Listings, end to end (folders): {timings || "none yet"}
+      </p>
     </div>
   );
 }
